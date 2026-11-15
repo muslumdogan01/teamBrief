@@ -92,3 +92,11 @@ footer { margin: 0 40px; padding: 24px 0; border-top: 1px solid #dce2d8; font-si
   .stats > div { padding: 18px; }
   .stats strong { margin: 8px 0 4px; }
 }
+
+.auth-page { max-width: 540px; margin: 6vh auto; padding: 24px; }
+.auth-page .field { margin: 20px 0; }
+.pub-picker { display: block; padding: 12px 24px; }
+
+.account-topbar { margin-left: 248px; }
+button:disabled { cursor: wait; opacity: .65; }
+@media (max-width: 700px) { .account-topbar { margin-left: 0; } }

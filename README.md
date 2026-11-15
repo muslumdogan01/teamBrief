@@ -1,67 +1,56 @@
 # TeamBrief
 
-An English-only incident reporting and service ban management demo for pub teams, built with React, TypeScript, Vite and plain CSS.
+An English-only pub incident reporting and service-ban application using React, TypeScript, Vite and **local Supabase**. The normal entry point uses real email/password authentication and database memberships; there is no demo role selector.
 
-## Run locally
+## Run on this computer
+
+Docker Desktop and the existing local `teambrief` Supabase stack must be running. No cloud project, link, deployment or remote database commands are needed.
 
 ```sh
 npm install
-npm run dev
+# Create ignored .env.test.local with TEAMBRIEF_LOCAL_TEST_PASSWORD before preparing accounts.
+npm run prepare:local
+npm run dev -- --host 127.0.0.1
 ```
 
-Open the address printed in the terminal. Use the same browser and address/port to access existing records. Data is stored only in localStorage and is lost if browser data is cleared.
+The preparation script discovers the running local stack, creates the fictional pub/test accounts and writes only the URL and client anon/publishable key to ignored `.env.local`. It is repeatable, does not reset the database, and never imports browser records. On this Mac Docker lives under `/Applications/Docker.app/Contents/Resources/bin`; the script handles that path. `.env.example` contains only empty variable names. Missing/invalid configuration displays an English error; restart Vite after changing environment settings.
 
-## Demo profiles and workflow
+Open `http://127.0.0.1:5173` (or the port Vite prints). The test account password is stored only in ignored `.env.test.local` as `TEAMBRIEF_LOCAL_TEST_PASSWORD`; use that local value to sign in. For a fresh setup, choose a local test password of at least 12 characters before running the preparation script:
 
-The profile selector offers **Müslüm — Employee** and **Alex — Manager**. These are demo views, not real authentication or access control. Switching profiles does not delete records. Reloading starts in the employee view.
+| Email | Name | Pub role |
+| --- | --- | --- |
+| `staff1@teambrief.test` | Jamie Example | Staff |
+| `staff2@teambrief.test` | Taylor Example | Staff |
+| `manager@teambrief.test` | Morgan Example | Manager |
 
-1. As Müslüm, open **Report Incident** and submit a report with a past date and time. Reports start as **Awaiting review** and appear in **My Reports**.
-2. Switch to Alex and open **Management → Awaiting review**. Read the original report and choose **Create service ban** or **No ongoing ban required**. Both decisions require a reason.
-3. A service ban also requires a final severity, service instructions and a future review date and time. The original report is kept separate from the manager’s decision.
-4. View **Active Decisions** as either profile. Follow the service instructions regardless of severity: **low severity does not permit service**.
-5. The review date triggers a **Review overdue** warning; it never lifts a ban automatically. The warning refreshes within 15 seconds.
-6. As Alex, open the active ban, enter a reason and select **Lift ban with reason**. It leaves the active list but remains in **Management → Decision history** and the report’s review outcome, including who lifted it, when and why.
-7. Reload and switch profiles to confirm records are retained. Home shows total reports, reports awaiting review and active bans.
+These accounts are fictional and local-only. Never commit `.env.test.local` or paste its password into documentation. The preparation and HTTP test scripts read it at runtime; there is no hard-coded account password. The script refuses non-loopback Supabase URLs and remote Docker sockets. It uses local administrative credentials only in the Node process and trusted container SQL; privileged credentials are never written to frontend configuration. It refuses to overwrite accounts with matching emails unless they carry the local fixture marker. Re-running preserves existing passwords and incident/decision records while restoring the fixture names and memberships.
 
-All required text fields reject whitespace-only input. Future incident times and past review times are rejected. Storage failures keep the form available and display an error. Navigation stays on the left on desktop and along the bottom on mobile.
+## Try the connected workflow
 
-## English labels and stored codes
+1. Sign in as staff1. Submit a past incident from **Report Incident**; find it in **My Incidents**.
+2. Sign out and sign in as manager. Open **Management**, read the full report and create a ban with a reason, service instructions and future review time, or choose **No ongoing ban required**.
+3. Sign in as staff2. **My Incidents** does not show staff1’s full report. **Active Decisions** shows the ban and the permitted identifying summary, without the original description or reporter identity.
+4. As manager, lift the ban with a reason. Staff2 loses access to that decision/person summary after refresh (automatic within 15 seconds or on window focus). The author and manager retain the review outcome/history. **Decision history** is available to managers.
+5. Sign out or switch accounts: the previous account workspace is unmounted, memory records/forms are cleared, and delayed responses cannot populate the new workspace. Accounts without an active pub membership see **Access not granted**. Multiple memberships offer only pubs actually returned by RLS; roles cannot be chosen.
 
-The document language is `en`. Displayed dates and times use `en-IE` in the user’s local time zone. There is no language selector or translation package. Names and user-entered labels, descriptions, decision explanations, service instructions and lifting reasons are not translated.
+Low severity never permits service while a ban is active. Review-overdue bans remain active until explicitly lifted. Mutation errors never display success; a successful write followed by refresh failure explicitly warns against retrying a duplicate submission. Loading, empty, retry and error states are provided. Database records refresh every 15 seconds and on window focus.
 
-Stored codes are independent of labels:
+## Data boundaries
 
-- Report status: `pending_review` → Awaiting review. Review outcomes are derived from separate decisions.
-- Demo roles: `employee`, `manager`.
-- Incident types: `aggressive_behaviour`, `causing_disturbance`, `intoxication`, `rule_violation`, `other`.
-- Severity: `low`, `medium`, `high`.
-- Decision kinds: `ban`, `no-ban`. A ban is active until it has a `lifted` record.
+`src/backend.ts` maps SQL snake_case/UUIDs to separate connected TypeScript models and maps `staff` to the existing UI role `employee`. It uses the four existing RPCs for submission, decisions, lifting and active-person summaries. Staff full-report queries explicitly filter by their own account in addition to server RLS. Names of other accounts are not exposed by the existing profiles policy, so report/decision/history actor fields display account UUIDs; no broader profile access was added.
 
-## Backwards-compatible storage migration
+Auth sessions use a dedicated **sessionStorage** key. Existing `teambrief.reports.v1`, `teambrief.data.v2` and `teambrief.data.v3` localStorage records are neither read, changed, deleted nor uploaded by the connected entry point. The old demo component/data migration remain in source for backwards-compatibility tests; there is no automatic demo fallback or mixing with database records.
 
-On first opening this version, `teambrief.data.v2` is migrated to `teambrief.data.v3`. If v2 is absent, the original `teambrief.reports.v1` records are migrated. Both legacy keys remain unchanged as backups. Subsequent loads use v3 without duplicating or resetting records.
-
-The migration converts the original Turkish incident types, `İnceleme bekliyor` status and Turkish severity labels into stable English codes. It preserves IDs, timestamps, report text, decision reasons, instructions and lifting history, including whitespace. Overdue bans remain active. Invalid data is not silently deleted or overwritten.
-
-The app still reads and writes **localStorage only**. No Supabase client, frontend connection, real sign-in or photo upload is implemented. The SQL files below are preparation artifacts; they do not migrate browser records.
-
-## Supabase preparation (not connected)
-
-- Schema: `supabase/migrations/20261113000100_teambrief_schema.sql`.
-- Database access checks: `supabase/tests/database/access.sql`.
-- Model mapping, security review and verification limits: [`supabase/README.md`](supabase/README.md).
-
-The schema defines pub memberships, incident reports, manager decisions and immutable decision history. SQL roles are `staff` and `manager`; the demo TypeScript role `employee` will need to map to `staff`. Memberships can only be managed by a trusted administrator, not through the demo profile selector.
-
-**Local database verification passed on 15 November 2026.** Supabase CLI 3.1.0 applied migration `20261113000100` to the local PostgreSQL 17 database. The unchanged access SQL passed all 66 checks through container `psql` with `ON_ERROR_STOP=1`; fixtures were rolled back. The 14 frontend tests and production build also passed. No cloud Supabase operations were performed; API/JWT integration and concurrency checks remain pending. See the Supabase README for repeatable local commands.
+Dates use `en-IE` and the browser’s local time zone. Incident/severity/status/decision codes are unchanged. Photo uploads are not implemented.
 
 ## Checks
 
 ```sh
 npm test
 npm run build
+npm run test:local
 ```
 
-Tests use Node.js 22.19 or a compatible newer version. They cover migration, user text preservation, validation messages, English labels, server-rendered interface output, en-IE dates, demo access rules and the decision lifecycle. No additional test packages are required.
+The 19 automated tests include the original 14 demo tests plus connected configuration, error/adapter, login/logout, membership denial and delayed-response isolation checks (DOM tests via jsdom). Real HTTP/JWT checks use the three local accounts, exercise the backend adapter and permissions, and retain fictional reports/audit history with test bans lifted. They do not delete existing records or reset/apply migrations.
 
-Production output is written to `dist/`. Use `npm run preview` to inspect it locally.
+The existing migration and 66 SQL access checks also passed in local PostgreSQL. See [`supabase/README.md`](supabase/README.md) for commands and verification limits. Full visual/browser testing was unavailable because the computer-use tool exposed no browsers. Manager demotion/concurrent revocation races remain outside the current integration suite.

@@ -132,75 +132,81 @@ function SeverityBadge({ severity }: { severity: Severity }) { return <span clas
 function ReportDetails({ report }: { report: Report }) {
   return <><div className="detail-heading"><h2>{report.label}</h2><SeverityBadge severity={report.severity} /></div><p className="muted">Suggested severity in the original report</p><dl><div><dt>Reported by</dt><dd>{report.employee}</dd></div><div><dt>Incident date and time</dt><dd>{formatDate(report.occurredAt)}</dd></div><div><dt>Incident type</dt><dd>{incidentLabels[report.incidentType]}</dd></div><div><dt>Submitted on</dt><dd>{formatDate(report.createdAt)}</dd></div><div className="wide"><dt>Identifying description</dt><dd>{report.appearance}</dd></div><div className="wide"><dt>Incident description</dt><dd>{report.description}</dd></div></dl></>
 }
-function DecisionDetails({ decision: d, now, isManager, onLift }: { decision: Decision; now: number; isManager: boolean; onLift: (id: string, reason: string) => string | null }) {
+function DecisionDetails({ decision: d, now, isManager, onLift }: { decision: Decision; now: number; isManager: boolean; onLift: (id: string, reason: string) => string | null | Promise<string | null> }) {
   return <section className="panel detail decision-detail"><div className="detail-heading"><h2>Review outcome</h2><span className="pending">{decisionTitle(d)}</span></div><dl><div><dt>Decided by</dt><dd>{d.manager}</dd></div><div><dt>Decision date and time</dt><dd>{formatDate(d.decidedAt)}</dd></div><div className="wide"><dt>Reason for the decision</dt><dd>{d.explanation}</dd></div>{d.kind === 'ban' && <><div><dt>Final severity</dt><dd><SeverityBadge severity={d.severity} /></dd></div><div><dt>Review date and time</dt><dd>{formatDate(d.reviewAt)}</dd></div><div className="wide"><dt>Service instructions</dt><dd className="service-instruction">{d.instruction}</dd></div>{d.lifted && <><div><dt>Ban lifted by</dt><dd>{d.lifted.manager}</dd></div><div><dt>Date and time lifted</dt><dd>{formatDate(d.lifted.at)}</dd></div><div className="wide"><dt>Reason for lifting the ban</dt><dd>{d.lifted.reason}</dd></div></>}</>}</dl>{reviewDue(d, now) && <p className="review-warning" role="status">Review overdue. The ban remains active until a manager lifts it.</p>}{d.kind === 'ban' && !d.lifted && <><p className="info-note">A low severity rating does not permit service. Follow the service instructions above.</p>{isManager && <LiftForm key={d.id} onSave={reason => onLift(d.id, reason)} />}</>}</section>
 }
-function DecisionForm({ onSave }: { onSave: (draft: DecisionDraft) => string | null }) {
+export function DecisionForm({ onSave, actor = 'Alex' }: { actor?: string; onSave: (draft: DecisionDraft) => string | null | Promise<string | null> }) {
   const [draft, setDraft] = useState<DecisionDraft>({ kind: 'ban', explanation: '', severity: 'medium', instruction: '', reviewAt: '' })
   const [errors, setErrors] = useState<ReturnType<typeof validateDecision>>({})
   const [failure, setFailure] = useState('')
   const form = useRef<HTMLFormElement>(null)
   const saving = useRef(false)
+  const [pendingSave, setPendingSave] = useState(false)
   const [minDate, setMinDate] = useState(localDateTime(new Date(Date.now() + 60000)))
   useEffect(() => { const id = window.setInterval(() => setMinDate(localDateTime(new Date(Date.now() + 60000))), 15000); return () => window.clearInterval(id) }, [])
   function update(field: keyof DecisionDraft, value: string) { setDraft(prev => ({ ...prev, [field]: value })); setErrors({}); setFailure('') }
-  function submit(e: FormEvent) {
+  async function submit(e: FormEvent) {
     e.preventDefault()
     if (saving.current) return
     const result = validateDecision(draft)
     setErrors(result)
     const first = Object.keys(result)[0]
     if (first) { form.current?.querySelector<HTMLElement>(`[name="${first}"]`)?.focus(); return }
-    saving.current = true
-    const error = onSave(draft)
-    if (error) { setFailure(error); saving.current = false }
+    saving.current = true; setPendingSave(true)
+    try { const error = await onSave(draft); if (error) setFailure(error) }
+    catch { setFailure('Unable to save the decision. Please try again.') }
+    finally { saving.current = false; setPendingSave(false) }
   }
   const props = (field: keyof DecisionDraft) => ({ id: `decision-${field}`, name: field, required: true, 'aria-invalid': Boolean(errors[field]), 'aria-describedby': `decision-${field}-help${errors[field] ? ` decision-${field}-error` : ''}` })
   const error = (field: keyof DecisionDraft) => errors[field] && <span className="field-error" id={`decision-${field}-error`}>{errors[field]}</span>
-  return <form className="panel report-form decision-detail" onSubmit={submit} ref={form} noValidate><div className="section-heading"><h2>Manager decision</h2><span className="muted">Decided by: Alex</span></div><div className="form-grid">
+  return <form className="panel report-form decision-detail" onSubmit={submit} ref={form} noValidate><div className="section-heading"><h2>Manager decision</h2><span className="muted">Decided by: {actor}</span></div><div className="form-grid">
     <div className="field wide"><label htmlFor="decision-kind">Decision</label><p id="decision-kind-help">The decision is saved separately from the original report.</p><select {...props('kind')} value={draft.kind} onChange={e => update('kind', e.target.value)}><option value="ban">Create service ban</option><option value="no-ban">No ongoing ban required</option></select>{error('kind')}</div>
     <div className="field wide"><label htmlFor="decision-explanation">Reason for the decision</label><p id="decision-explanation-help">A reason is required for either decision. For example: “A service ban is needed because there is a risk of further incidents.”</p><textarea {...props('explanation')} rows={3} maxLength={10000} value={draft.explanation} onChange={e => update('explanation', e.target.value)} />{error('explanation')}</div>
     {draft.kind === 'ban' && <><div className="field"><label htmlFor="decision-severity">Final severity</label><p id="decision-severity-help">The manager’s assessment. Low severity does not permit service.</p><select {...props('severity')} value={draft.severity} onChange={e => update('severity', e.target.value)}>{Object.entries(severityLabels).map(([value, label]) => <option value={value} key={value}>{label}</option>)}</select>{error('severity')}</div><div className="field"><label htmlFor="decision-reviewAt">Review date and time</label><p id="decision-reviewAt-help">Choose a future date and time in your local time zone. The ban will not be lifted automatically.</p><input {...props('reviewAt')} type="datetime-local" min={minDate} value={draft.reviewAt} onFocus={() => setMinDate(localDateTime(new Date(Date.now() + 60000)))} onChange={e => update('reviewAt', e.target.value)} />{error('reviewAt')}</div><div className="field wide"><label htmlFor="decision-instruction">Service instructions</label><p id="decision-instruction-help">What should staff do? For example: “Do not serve this person. Notify the duty manager.”</p><textarea {...props('instruction')} rows={3} maxLength={10000} value={draft.instruction} onChange={e => update('instruction', e.target.value)} />{error('instruction')}</div></>}
-    </div>{Object.keys(errors).length > 0 && <p className="field-error" role="alert">Please check the highlighted decision fields.</p>}{failure && <p className="error-banner" role="alert">{failure}</p>}<div className="form-actions"><button type="submit" className="primary">Save decision</button></div></form>
+    </div>{Object.keys(errors).length > 0 && <p className="field-error" role="alert">Please check the highlighted decision fields.</p>}{failure && <p className="error-banner" role="alert">{failure}</p>}<div className="form-actions"><button type="submit" className="primary" disabled={pendingSave}>{pendingSave ? 'Saving…' : 'Save decision'}</button></div></form>
 }
-function LiftForm({ onSave }: { onSave: (reason: string) => string | null }) {
+export function LiftForm({ onSave }: { onSave: (reason: string) => string | null | Promise<string | null> }) {
   const [reason, setReason] = useState('')
   const [error, setError] = useState('')
   const input = useRef<HTMLTextAreaElement>(null)
   const saving = useRef(false)
-  function submit(e: FormEvent) {
+  const [pendingSave, setPendingSave] = useState(false)
+  async function submit(e: FormEvent) {
     e.preventDefault()
     if (saving.current) return
     if (!reason.trim()) { setError('Please give a reason for lifting the ban.'); input.current?.focus(); return }
-    saving.current = true
-    const failure = onSave(reason)
-    if (failure) { setError(failure); saving.current = false }
+    saving.current = true; setPendingSave(true)
+    try { const failure = await onSave(reason); if (failure) setError(failure) }
+    catch { setError('Unable to lift the ban. Please try again.') }
+    finally { saving.current = false; setPendingSave(false) }
   }
-  return <form className="lift-form" onSubmit={submit} noValidate><h3>Lift ban</h3><div className="field"><label htmlFor="lift-reason">Reason for lifting the ban</label><p id="lift-help">Explain why the ban is no longer needed. This reason, the manager’s name and the time will remain in the decision history.</p><textarea id="lift-reason" ref={input} required rows={3} maxLength={10000} value={reason} aria-invalid={Boolean(error)} aria-describedby={`lift-help${error ? ' lift-error' : ''}`} onChange={e => { setReason(e.target.value); setError('') }} />{error && <p className="field-error" id="lift-error" role="alert">{error}</p>}</div><div className="form-actions"><button className="primary" type="submit">Lift ban with reason</button></div></form>
+  return <form className="lift-form" onSubmit={submit} noValidate><h3>Lift ban</h3><div className="field"><label htmlFor="lift-reason">Reason for lifting the ban</label><p id="lift-help">Explain why the ban is no longer needed. This reason, the manager’s name and the time will remain in the decision history.</p><textarea id="lift-reason" ref={input} required rows={3} maxLength={10000} value={reason} aria-invalid={Boolean(error)} aria-describedby={`lift-help${error ? ' lift-error' : ''}`} onChange={e => { setReason(e.target.value); setError('') }} />{error && <p className="field-error" id="lift-error" role="alert">{error}</p>}</div><div className="form-actions"><button className="primary" type="submit" disabled={pendingSave}>{pendingSave ? 'Saving…' : 'Lift ban with reason'}</button></div></form>
 }
-function ReportForm({ onSave }: { onSave: (draft: ReportDraft) => string | null }) {
+export function ReportForm({ onSave, actor = 'Müslüm' }: { actor?: string; onSave: (draft: ReportDraft) => string | null | Promise<string | null> }) {
   const [draft, setDraft] = useState<ReportDraft>({ label: '', occurredAt: '', incidentType: '', severity: 'medium', appearance: '', description: '' })
   const [errors, setErrors] = useState<FormErrors>({})
   const [saveError, setSaveError] = useState('')
   const [maxDate, setMaxDate] = useState(localDateTime())
   const form = useRef<HTMLFormElement>(null)
   const saving = useRef(false)
+  const [pendingSave, setPendingSave] = useState(false)
   useEffect(() => { const timer = window.setInterval(() => setMaxDate(localDateTime()), 15000); return () => window.clearInterval(timer) }, [])
   function update(field: keyof ReportDraft, value: string) {
     setDraft(prev => ({ ...prev, [field]: value }))
     setErrors(prev => ({ ...prev, [field]: undefined }))
     setSaveError('')
   }
-  function submit(event: FormEvent) {
+  async function submit(event: FormEvent) {
     event.preventDefault()
     if (saving.current) return
     const nextErrors = validateDraft(draft)
     setErrors(nextErrors)
     const first = Object.keys(nextErrors)[0]
     if (first) { form.current?.querySelector<HTMLElement>(`[name="${first}"]`)?.focus(); return }
-    saving.current = true
-    const failure = onSave(draft)
-    if (failure) { setSaveError(failure); saving.current = false }
+    saving.current = true; setPendingSave(true)
+    try { const failure = await onSave(draft); if (failure) setSaveError(failure) }
+    catch { setSaveError('Unable to save the incident. Please try again.') }
+    finally { saving.current = false; setPendingSave(false) }
   }
   function fieldProps(field: keyof ReportDraft) {
     return { id: field, name: field, required: true, 'aria-invalid': Boolean(errors[field]), 'aria-describedby': `${field}-help${errors[field] ? ` ${field}-error` : ''}` }
@@ -216,10 +222,10 @@ function ReportForm({ onSave }: { onSave: (draft: ReportDraft) => string | null 
       <div className="field wide"><label htmlFor="appearance">Identifying description</label><p id="appearance-help">Describe observable features. For example: “Blue jacket, round glasses, short hair”.</p><textarea {...fieldProps('appearance')} rows={3} maxLength={2000} value={draft.appearance} placeholder="Clothing and distinguishing features…" onChange={e => update('appearance', e.target.value)} />{error('appearance')}</div>
       <div className="field wide"><label htmlFor="description">Incident description</label><p id="description-help">What happened, where did it happen and how did staff respond? For example: “They shouted at the bar. Staff asked them to calm down and they left the premises.”</p><textarea {...fieldProps('description')} rows={5} maxLength={10000} value={draft.description} placeholder="Describe what you observed…" onChange={e => update('description', e.target.value)} />{error('description')}</div>
     </div>
-    <p className="info-note">Reported by: <strong>Müslüm</strong> · New reports are saved as “Awaiting review”. A report does not automatically create a service ban.</p>
+    <p className="info-note">Reported by: <strong>{actor}</strong> · New reports are saved as “Awaiting review”. A report does not automatically create a service ban.</p>
     {Object.keys(errors).some(key => errors[key as keyof ReportDraft]) && <p className="field-error" role="alert">Please check the highlighted fields.</p>}
     {saveError && <p className="error-banner" role="alert">{saveError}</p>}
-    <div className="form-actions"><button className="primary" type="submit">Submit report →</button></div>
+    <div className="form-actions"><button className="primary" type="submit" disabled={pendingSave}>{pendingSave ? 'Saving…' : 'Submit report →'}</button></div>
   </form>
 }
 export default App
