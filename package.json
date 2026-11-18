@@ -10,7 +10,9 @@
     "preview": "vite preview",
     "test": "node --experimental-strip-types --test tests/*.test.mjs",
     "prepare:local": "node --experimental-strip-types scripts/prepare-local.mjs",
-    "test:local": "node --experimental-strip-types scripts/test-local.mjs"
+    "test:local": "node --experimental-strip-types scripts/test-local.mjs",
+    "test:local:photos": "node --experimental-strip-types scripts/test-local-photos.mjs",
+    "cleanup:local:photos": "node --experimental-strip-types scripts/cleanup-local-photos.mjs"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.119.0",

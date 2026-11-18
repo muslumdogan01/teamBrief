@@ -18,7 +18,7 @@ At the initial schema checkpoint, post-test database checks confirmed zero fixtu
 Run from the project root with Docker Desktop running. On this machine Docker binaries are under `/Applications/Docker.app/Contents/Resources/bin`; add that directory to PATH if necessary.
 
 ```sh
-npx --no-install supabase start --exclude realtime,storage-api,imgproxy,mailpit,postgres-meta,studio,edge-runtime,logflare,vector,supavisor
+npx --no-install supabase start --exclude realtime,imgproxy,mailpit,postgres-meta,studio,edge-runtime,logflare,vector,supavisor
 docker exec -i supabase_db_teambrief psql -X -U postgres -d postgres -v ON_ERROR_STOP=1 < supabase/tests/database/access.sql
 ```
 
@@ -76,3 +76,7 @@ Run `npm run prepare:local` from the repository root. This separate Node script 
 `npm run test:local` passed with actual password sign-in and bearer JWTs over local HTTP: membership mapping, rejected self-promotion, staff decision/lift denial, own-versus-other report privacy, active summary's exact field allowlist, manager ban/no-ban creation and lifting, author/manager history, unassigned-pub denial, sign-out denial and wrong-password handling. It uses the same adapter as the frontend. Fictional integration reports/history are retained, and test bans are lifted. No privileged key is used by frontend code or this HTTP test suite.
 
 DOM tests verify login errors, logout, no-membership denial, account switching and late old-user responses. Full browser visual interaction was unavailable (no browsers exposed by the computer-use tool). Still pending: manager demotion and concurrent revocation/decision races; broad HTTP/JWT parity with every SQL edge case. No cloud operations, migration reapplication or data reset occurred.
+
+## Incident photo storage
+
+Apply pending migrations with `npx --no-install supabase migration up --local` and keep `storage-api` enabled. The photo migration creates a private bucket, a protected upload reservation and a per-report attachment. The next migration scopes Storage policies to the installed upload/download operations. After applying them, run the existing `access.sql` command above and `npm run test:local:photos`. Use `npm run cleanup:local:photos` to clear abandoned and expired staged data through the Storage API. See the root README for workflow and cleanup details.

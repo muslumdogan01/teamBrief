@@ -3,8 +3,12 @@ import type { FormEvent } from 'react'
 import { createClient } from '@supabase/supabase-js'
 import type { SupabaseClient, User } from '@supabase/supabase-js'
 import { clientConfig } from './local-config.ts'
-import { checked, createDecision, createIncident, emptyData, liftDecision, loadData, memberships } from './backend.ts'
-import type { Data, Incident, Membership, ServerDecision } from './backend.ts'
+import { checked, createDecision, emptyData, liftDecision, loadData, loadTeamTotals, markUpdateRead, memberships } from './backend.ts'
+import type { Data, Incident, Membership, ServerDecision, TeamTotals, VenueUpdate } from './backend.ts'
+import { discardIncidentPhoto, submitIncident } from './incident-photo-backend.ts'
+import type { PhotoSubmission } from './incident-photo-backend.ts'
+import { ActiveBanDetail, ActiveBanDirectory } from './ActiveBanDirectory.tsx'
+import { IncidentPhoto } from './IncidentPhoto.tsx'
 import { requestScope, runMutation } from './session-state.ts'
 import { DecisionForm, LiftForm, ReportForm } from './App.tsx'
 import { formatDate, incidentLabels, severityLabels } from './reports.ts'
@@ -80,7 +84,7 @@ function Account({ client, user, logout }: { client: SupabaseClient; user: User;
     return () => { alive = false }
   }, [client, user.id, attempt])
   const member = members?.find(m => m.venueId === venue)
-  return <><header className={member ? "topbar account-topbar" : "topbar"}><strong>TeamBrief · {user.email}</strong><button onClick={logout}>Sign out</button></header>{error ? <main><p role="alert" className="error-banner">{error}</p><button onClick={() => { setMembers(null); setError(''); setAttempt(n => n + 1) }}>Retry</button></main> : !members ? <main role="status">Loading pub membership…</main> : !member ? <main><h1>Access not granted</h1><p>Your account has no active pub membership. Ask your pub administrator to assign access.</p></main> : <>{members.length > 1 && <label className="pub-picker">Pub <select value={venue} onChange={e => setVenue(e.target.value)}>{members.map(m => <option key={m.venueId} value={m.venueId}>{m.venueName}</option>)}</select></label>}<Workspace key={member.venueId} client={client} member={member} /></>}</>
+  return <><header className={member ? "topbar account-topbar" : "topbar"}><strong>TeamBrief · {user.email}</strong><button className="secondary-button" onClick={logout}>Sign out</button></header>{error ? <main><p role="alert" className="error-banner">{error}</p><button onClick={() => { setMembers(null); setError(''); setAttempt(n => n + 1) }}>Retry</button></main> : !members ? <main role="status">Loading pub membership…</main> : !member ? <main><h1>Access not granted</h1><p>Your account has no active pub membership. Ask your pub administrator to assign access.</p></main> : <>{members.length > 1 && <label className="pub-picker">Pub <select value={venue} onChange={e => setVenue(e.target.value)}>{members.map(m => <option key={m.venueId} value={m.venueId}>{m.venueName}</option>)}</select></label>}<Workspace key={member.venueId} client={client} member={member} /></>}</>
 }
 type Page = 'home' | 'create' | 'mine' | 'active' | 'review' | 'history'
 function Workspace({ client, member }: { client: SupabaseClient; member: Membership }) {
@@ -91,58 +95,183 @@ function Workspace({ client, member }: { client: SupabaseClient; member: Members
   const [page, setPage] = useState<Page>('home')
   const [selected, setSelected] = useState<string | null>(null)
   const [now, setNow] = useState(() => Date.now())
+  const [homeQuery, setHomeQuery] = useState('')
+  const [activeQuery, setActiveQuery] = useState('')
+  const [totals, setTotals] = useState<TeamTotals | null>(null)
+  const [refreshVersion, setRefreshVersion] = useState(0)
   const scope = useMemo(requestScope, [])
   const lifetime = useMemo(requestScope, [])
   const manager = member.role === 'manager'
   const [allowed, setAllowed] = useState(true)
   async function refresh() {
     const ticket = scope.invalidate()
+    setRefreshVersion(version => version + 1)
+    setNow(Date.now())
     setError(''); setNotice('')
     try {
       const current = (await memberships(client, member.userId)).find(m => m.venueId === member.venueId && m.role === member.role)
       if (!current) { if (scope.current(ticket)) { setAllowed(false); setData(emptyData()) }; throw new Error('Your pub membership changed. Sign out and sign in again to refresh access.') }
-      const next = await loadData(client, current)
-      if (scope.current(ticket)) { setData(next); setAllowed(true) }
-    } catch (e) { if (scope.current(ticket)) { setData(emptyData()); setError(message(e)) }; throw e }
+      const [next, counts] = await Promise.all([loadData(client, current), loadTeamTotals(client, current.venueId)])
+      if (scope.current(ticket)) { setData(next); setTotals(counts); setAllowed(true) }
+    } catch (e) { if (scope.current(ticket)) { setData(emptyData()); setTotals(null); setError(message(e)) }; throw e }
     finally { if (scope.current(ticket)) setLoading(false) }
   }
   useEffect(() => {
     void refresh().catch(() => {})
-    const timer = window.setInterval(() => { setNow(Date.now()); void refresh().catch(() => {}) }, 15000)
+    const timer = window.setInterval(() => { void refresh().catch(() => {}) }, 15000)
     const focus = () => { void refresh().catch(() => {}) }
     window.addEventListener('focus', focus)
     return () => { scope.invalidate(); lifetime.invalidate(); window.clearInterval(timer); window.removeEventListener('focus', focus) }
   // A workspace is keyed by user and pub; cleanup invalidates all pending results.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [client, member.venueId, member.userId, scope])
-  async function mutate(write: () => Promise<unknown>, next: Page): Promise<string | null> {
+  async function mutate(write: () => Promise<unknown>, next: Page, incidentSubmission = false): Promise<string | null> {
     const ticket = lifetime.ticket(); setNotice('')
     try {
       await runMutation(write, async () => { if (!lifetime.current(ticket)) throw new Error('Account changed.'); await refresh() })
       // Refresh starts a new generation; unmounted workspaces cannot publish data.
       if (lifetime.current(ticket)) { setNotice('Saved successfully.'); setSelected(null); setPage(next) }
       return null
-    } catch (e) { const failure = message(e); if (lifetime.current(ticket) && failure.startsWith('Saved, but')) setError(failure); return failure }
+    } catch (e) {
+      const failure = message(e)
+      if (lifetime.current(ticket) && failure.startsWith('Saved, but')) {
+        if (incidentSubmission) {
+          setError('Incident saved. Use Refresh to reload the list.')
+          setPage(next)
+          setSelected(null)
+          return null
+        }
+        setError(failure)
+      }
+      return failure
+    }
   }
   const mine = data.incidents.filter(r => r.reportedBy === member.userId)
   const pending = data.incidents.filter(r => !data.decisions.some(d => d.reportId === r.id))
-  const active = data.decisions.filter(d => d.kind === 'ban' && !d.liftedAt)
   const incident = data.incidents.find(r => r.id === selected)
   const decision = data.decisions.find(d => d.id === selected || d.reportId === selected)
   const titles: Record<Page, string> = { home: 'Home', create: 'Report Incident', mine: 'My Incidents', active: 'Active Decisions', review: 'Management', history: 'Decision history' }
+  const directoryPage = page === 'home' || page === 'active'
+  const banProps = { client, venueId: member.venueId, now, refreshVersion }
   function navigate(p: Page) { setPage(p); setSelected(null); setNotice('') }
+  function viewAll(query: string) { setActiveQuery(query); navigate('active') }
+  function openBan(id: string) { if (page === 'home') viewAll(homeQuery.trim()); setSelected(id) }
   function decisionView(d: ServerDecision) {
-    return <section className="panel detail"><h2>{d.kind === 'no-ban' ? 'No ongoing ban required' : d.liftedAt ? 'Service ban lifted' : 'Active service ban'}</h2><p>{d.explanation}</p><p>Decided by account: {d.decidedBy} · {formatDate(d.decidedAt)}</p>{d.kind === 'ban' && <><p className="service-instruction">{d.instruction}</p><p>{severityLabels[d.severity!]} severity · Review due: {formatDate(d.reviewAt!)}</p>{!d.liftedAt && Date.parse(d.reviewAt!) <= now && <p className="review-warning">Review overdue. The ban remains active until a manager lifts it.</p>}<p className="info-note">Low severity does not permit service. Follow the service instructions.</p>{d.liftedAt ? <p>Lifted by account {d.liftedBy} · {formatDate(d.liftedAt)} · {d.liftReason}</p> : manager && <LiftForm key={d.id} onSave={reason => mutate(() => liftDecision(client, member.venueId, d.id, reason), page)} />}</>}<h3>Decision history</h3>{data.history.filter(h => h.decisionId === d.id).map(h => <p key={h.id}>{h.event} · {formatDate(h.at)} · Account {h.actorId} · {h.reason}</p>)}{!data.history.some(h => h.decisionId === d.id) && <p>History is available to the reporting employee and pub managers.</p>}</section>
+    return <section className="panel detail"><h2>{d.kind === 'no-ban' ? 'No ongoing ban required' : d.liftedAt ? 'Service ban lifted' : 'Active service ban'}</h2><p>{d.explanation}</p><p>Decided by account: {d.decidedBy} · {formatDate(d.decidedAt)}</p>{d.kind === 'ban' && <><p className="service-instruction">{d.instruction}</p><p>{severityLabels[d.severity!]} severity · Review due: {formatDate(d.reviewAt!)}</p>{!d.liftedAt && Date.parse(d.reviewAt!) <= now && <p className="review-warning">Review overdue. The ban remains active until a manager lifts it.</p>}<p className="info-note">Low severity does not permit service. Follow the service instructions.</p>{d.liftedAt ? <p>Lifted by account {d.liftedBy} · {formatDate(d.liftedAt)} · {d.liftReason}</p> : manager && <LiftForm key={d.id} showServiceNote onSave={(reason, note) => mutate(() => liftDecision(client, member.venueId, d.id, reason, note), page)} />}</>}<h3>Decision history</h3>{data.history.filter(h => h.decisionId === d.id).map(h => <p key={h.id}>{h.event} · {formatDate(h.at)} · Account {h.actorId} · {h.reason}</p>)}{!data.history.some(h => h.decisionId === d.id) && <p>History is available to the reporting employee and pub managers.</p>}</section>
   }
-  function list(items: Incident[]) { return items.length ? <ul className="report-list">{items.map(r => <li key={r.id}><button className="report-row" onClick={() => setSelected(r.id)}><strong>{r.label}</strong><span>{formatDate(r.occurredAt)}</span></button></li>)}</ul> : <p className="empty">No incidents to show.</p> }
-  return <div className="app-shell"><aside className="sidebar"><a className="brand" href="#" onClick={e => { e.preventDefault(); navigate('home') }}>TeamBrief</a><p>{member.venueName}</p><nav aria-label="Main navigation" style={{ '--nav-count': manager ? 6 : 4 } as React.CSSProperties}>{(Object.keys(titles) as Page[]).filter(p => manager || !['review', 'history'].includes(p)).map(p => <button key={p} className={page === p ? 'nav-item active' : 'nav-item'} onClick={() => navigate(p)}>{titles[p]}</button>)}</nav><div className="profile">{member.name} · {manager ? 'Manager' : 'Staff'}</div></aside><div className="workspace"><main><h1>{titles[page]}</h1><p className="storage-note">Connected to local Supabase · {member.venueName}</p><button onClick={() => { void refresh().catch(() => {}) }}>Refresh</button>{error && <p className="error-banner" role="alert">{error}</p>}{notice && <p className="success-banner" role="status">{notice}</p>}{loading ? <p role="status">Loading team records…</p> : error || !allowed ? <p>Records are unavailable. Refresh to try again.</p> : <>
-    {page === 'home' && <><div className="stats"><div><span>My incidents</span><strong>{mine.length}</strong></div><div><span>Active bans</span><strong>{active.length}</strong></div>{manager && <div><span>Awaiting review</span><strong>{pending.length}</strong></div>}</div><button className="primary" onClick={() => navigate('create')}>Report incident</button></>}
-    {page === 'create' && <ReportForm actor={member.name} onSave={draft => mutate(() => createIncident(client, member.venueId, draft), 'mine')} />}
-    {(page === 'mine' || page === 'review') && (incident ? <><button onClick={() => setSelected(null)}>← Back</button><FullIncident incident={incident} />{decision ? decisionView(decision) : page === 'review' && manager ? <DecisionForm actor={member.name} key={incident.id} onSave={draft => mutate(() => createDecision(client, member.venueId, incident.id, draft), 'review')} /> : <p>Awaiting review.</p>}</> : list(page === 'mine' ? mine : pending))}
-    {page === 'active' && <><p className="info-note">Reaching the review date does not automatically lift a ban.</p>{decision && !decision.liftedAt ? <><button onClick={() => setSelected(null)}>← Back</button>{(() => { const s = data.summaries.find(s => s.decisionId === decision.id); return s ? <section className="panel detail"><h2>{s.label}</h2><p>{s.appearance}</p><p>{incidentLabels[s.incidentType]} · {formatDate(s.occurredAt)}</p></section> : <p>Person summary unavailable. Refresh the list.</p> })()}{decisionView(decision)}</> : active.length ? <ul className="report-list">{active.map(d => <li key={d.id}><button className="report-row" onClick={() => setSelected(d.id)}><strong>{data.summaries.find(s => s.decisionId === d.id)?.label ?? 'Person summary unavailable'}</strong><span>{d.instruction}</span><span>Review due: {formatDate(d.reviewAt!)}</span>{Date.parse(d.reviewAt!) <= now && <span className="review-warning">Review overdue</span>}</button></li>)}</ul> : <p className="empty">No active service bans.</p>}</>}
-    {page === 'history' && manager && (decision ? <><button onClick={() => setSelected(null)}>← Back</button>{decisionView(decision)}</> : data.decisions.length ? <ul className="report-list">{data.decisions.map(d => <li key={d.id}><button className="report-row" onClick={() => setSelected(d.id)}><strong>{data.incidents.find(r => r.id === d.reportId)?.label ?? 'Incident'}</strong><span>{d.explanation}</span><span>{formatDate(d.decidedAt)}</span></button></li>)}</ul> : <p className="empty">No decisions yet.</p>)}
+  function incidentPhoto(reportId: string, label: string, compact = false) {
+    return <IncidentPhoto key={reportId} client={client} photo={data.photos.find(p => p.reportId === reportId)} label={label} compact={compact} />
+  }
+  function list(items: Incident[]) { return items.length ? <ul className="report-list">{items.map(r => <li key={r.id} className="report-with-photo">{incidentPhoto(r.id, r.label, true)}<button className="report-row" onClick={() => setSelected(r.id)}><strong>{r.label}</strong><span>{formatDate(r.occurredAt)}</span></button></li>)}</ul> : <p className="empty">No incidents to show.</p> }
+  return <div className="app-shell"><aside className="sidebar"><a className="brand" href="#" onClick={e => { e.preventDefault(); navigate('home') }}>TeamBrief</a><p>{member.venueName}</p><nav aria-label="Main navigation" style={{ '--nav-count': manager ? 6 : 4 } as React.CSSProperties}>{(Object.keys(titles) as Page[]).filter(p => manager || !['review', 'history'].includes(p)).map(p => <button key={p} className={page === p ? 'nav-item active' : 'nav-item'} onClick={() => navigate(p)}>{titles[p]}</button>)}</nav><div className="profile">{member.name} · {manager ? 'Manager' : 'Staff'}</div></aside><div className="workspace"><main className="connected-workspace">
+    <header className="connected-heading">
+      <div><h1>{titles[page]}</h1><p className="connected-context">{member.venueName}<span>Local test environment</span></p></div>
+      <div className="connected-actions">
+        <button className="secondary-button" onClick={() => { void refresh().catch(() => {}) }}>Refresh</button>
+        {page === 'home' && <button className="primary" onClick={() => navigate('create')}>Report incident</button>}
+      </div>
+    </header>
+    {notice && <p className="success-banner" role="status">{notice}</p>}
+    {page === 'home' && <div className="summary-strip" role="group" aria-label="Pub totals">
+      <button onClick={() => viewAll('')}>Active Decisions <strong>{totals?.active_bans ?? '—'}</strong></button>
+      <button onClick={() => navigate('mine')}>My Incidents <strong>{totals?.my_incidents ?? '—'}</strong></button>
+      {manager && <button onClick={() => navigate('review')}>Awaiting review <strong>{totals?.awaiting_review ?? '—'}</strong></button>}
+    </div>}
+    {directoryPage && allowed && (page === 'active' && selected ? <>
+      <button className="text-button" onClick={() => setSelected(null)}>← Back to active decisions</button>
+      <ActiveBanDetail key={selected} {...banProps} id={selected} onLift={manager ? (id, reason, note) =>
+        mutate(() => liftDecision(client, member.venueId, id, reason, note), 'active') : undefined} />
+    </> : <ActiveBanDirectory key={page} {...banProps} home={page === 'home'} query={page === 'home' ? homeQuery : activeQuery}
+      onQuery={page === 'home' ? setHomeQuery : setActiveQuery} onOpen={openBan} onAll={viewAll} />)}
+    {error && <p className="error-banner" role="alert">{error}</p>}
+    {loading ? (!directoryPage && <p role="status">Loading team records…</p>) : (error && page !== 'create') || !allowed
+      ? (!directoryPage && <p>Records are unavailable. Refresh to try again.</p>) : <>
+    {page === 'create' && <ConnectedReportForm client={client} member={member} save={write => mutate(write, 'mine', true)} />}
+    {(page === 'mine' || page === 'review') && (incident ? <><button onClick={() => setSelected(null)}>← Back</button><FullIncident incident={incident}>{incidentPhoto(incident.id, incident.label)}</FullIncident>{decision ? decisionView(decision) : page === 'review' && manager ? <DecisionForm actor={member.name} key={incident.id} onSave={draft => mutate(() => createDecision(client, member.venueId, incident.id, draft), 'review')} /> : <p>Awaiting review.</p>}</> : list(page === 'mine' ? mine : pending))}
+    {(page === 'home' || page === 'active') && <RecentUpdates updates={data.updates} onRead={async id => {
+      const ticket = lifetime.ticket()
+      await runMutation(() => markUpdateRead(client, member.venueId, id), async () => {
+        if (lifetime.current(ticket)) await refresh()
+      })
+    }} />}
+    {page === 'history' && manager && (decision ? <>
+      <button onClick={() => setSelected(null)}>← Back</button>
+      {(() => {
+        const report = data.incidents.find(r => r.id === decision.reportId)
+        return report && <FullIncident incident={report}>{incidentPhoto(report.id, report.label)}</FullIncident>
+      })()}
+      {decisionView(decision)}
+    </> : data.decisions.length ? <ul className="report-list">{data.decisions.map(d => {
+      const label = data.incidents.find(r => r.id === d.reportId)?.label ?? 'Incident'
+      return <li key={d.id} className="report-with-photo">{incidentPhoto(d.reportId, label, true)}
+        <button className="report-row" onClick={() => setSelected(d.id)}><strong>{label}</strong><span>{d.explanation}</span><span>{formatDate(d.decidedAt)}</span></button>
+      </li>
+    })}</ul> : <p className="empty">No decisions yet.</p>)}
   </>}</main></div></div>
 }
-function FullIncident({ incident: r }: { incident: Incident }) {
-  return <section className="panel detail"><h2>{r.label}</h2><dl><div><dt>Reported by account</dt><dd>{r.reportedBy}</dd></div><div><dt>Incident time</dt><dd>{formatDate(r.occurredAt)}</dd></div><div><dt>Incident type</dt><dd>{incidentLabels[r.incidentType]}</dd></div><div><dt>Suggested severity</dt><dd>{severityLabels[r.severity]}</dd></div><div className="wide"><dt>Identifying description</dt><dd>{r.appearance}</dd></div><div className="wide"><dt>Incident description</dt><dd>{r.description}</dd></div></dl></section>
+function ConnectedReportForm({ client, member, save }: {
+  client: SupabaseClient
+  member: Membership
+  save: (write: () => Promise<unknown>) => Promise<string | null>
+}) {
+  const attempt = useRef<PhotoSubmission | null>(null)
+  const upload = useRef<AbortController | null>(null)
+  const venueId = member.venueId
+  useEffect(() => () => {
+    upload.current?.abort()
+    const pending = attempt.current
+    if (pending?.photo) {
+      // If finalization won the race, the server protects the linked photo.
+      void discardIncidentPhoto(client, venueId, pending.reportId, pending.photo.uploadId).catch(() => {})
+    }
+  }, [client, venueId])
+
+  function discard(file: File) {
+    const current = attempt.current
+    if (!current?.photo || current.photo.file !== file) return
+    void discardIncidentPhoto(client, venueId, current.reportId, current.photo.uploadId).catch(() => {})
+    attempt.current = { reportId: current.reportId }
+  }
+
+  return <ReportForm actor={member.name} onDiscardPhoto={discard} onSave={(draft, file, progress) => {
+    const previous = attempt.current
+    const current: PhotoSubmission = {
+      reportId: previous?.reportId ?? crypto.randomUUID(),
+      photo: file ? (previous?.photo?.file === file ? previous.photo : { file, uploadId: crypto.randomUUID() }) : undefined,
+    }
+    attempt.current = current
+    upload.current = new AbortController()
+    const signal = upload.current.signal
+    return save(() => submitIncident(client, venueId, draft, current, stage => {
+      if (!signal.aborted) progress(stage)
+    }, signal))
+  }} />
+}
+
+function FullIncident({ incident: r, children }: { incident: Incident; children: React.ReactNode }) {
+  return <section className="panel detail"><h2>{r.label}</h2>{children}<dl><div><dt>Reported by account</dt><dd>{r.reportedBy}</dd></div><div><dt>Incident time</dt><dd>{formatDate(r.occurredAt)}</dd></div><div><dt>Incident type</dt><dd>{incidentLabels[r.incidentType]}</dd></div><div><dt>Suggested severity</dt><dd>{severityLabels[r.severity]}</dd></div><div className="wide"><dt>Identifying description</dt><dd>{r.appearance}</dd></div><div className="wide"><dt>Incident description</dt><dd>{r.description}</dd></div></dl></section>
+}
+
+function RecentUpdates({ updates, onRead }: { updates: VenueUpdate[]; onRead: (id: string) => Promise<void> }) {
+  const [saving, setSaving] = useState<string | null>(null)
+  const [error, setError] = useState('')
+  async function markRead(id: string) {
+    setSaving(id)
+    setError('')
+    try { await onRead(id) }
+    catch (e) { setError(message(e)) }
+    finally { setSaving(null) }
+  }
+  return <section className="panel detail recent-updates" aria-labelledby="recent-updates-heading">
+    <h2 id="recent-updates-heading">Recent Updates</h2>
+    {error && <p className="error-banner" role="alert">{error}</p>}
+    {updates.length ? <ul className="report-list">{updates.map(update => <li key={update.id}>
+      <h3>Service ban lifted · {update.personLabel}</h3>
+      <p><time dateTime={update.occurredAt}>{formatDate(update.occurredAt)}</time> · <span>{update.readAt ? 'Read' : 'Unread'}</span></p>
+      <p className="service-instruction">{update.serviceNote}</p>
+      {!update.readAt && <button className="secondary-button" type="button" disabled={saving !== null} onClick={() => { void markRead(update.id) }}>
+        {saving === update.id ? 'Saving…' : 'Mark as read'}
+      </button>}
+    </li>)}</ul> : <p className="empty">No recent updates.</p>}
+  </section>
 }
