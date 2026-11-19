@@ -1,12 +1,11 @@
 import assert from 'node:assert/strict'
-import { createClient } from '@supabase/supabase-js'
-import { accounts, localSettings, localTestPassword, venueId } from './local-tools.mjs'
+import { accounts, localClient, localSettings, localTestPassword, venueId } from './local-tools.mjs'
 import { createIncident, createDecision, findActiveBans, liftDecision, loadData, markUpdateRead, memberships } from '../src/backend.ts'
 import { decisionStatus } from '../src/decision-status.ts'
 async function main() {
   const password = localTestPassword()
   const { url, anon } = localSettings()
-  const clients = accounts.map(() => createClient(url, anon, { auth: { persistSession: false, autoRefreshToken: false } }))
+  const clients = accounts.map(() => localClient(url, anon))
   try {
     for (const [i, client] of clients.entries()) {
       const r = await client.auth.signInWithPassword({ email: accounts[i].email, password })

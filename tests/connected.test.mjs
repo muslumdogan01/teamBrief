@@ -1,16 +1,33 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { clientConfig, localUrl } from '../src/local-config.ts'
+import { clientConfig, localUrl } from '../src/supabase-config.ts'
 import { requestScope, runMutation } from '../src/session-state.ts'
 import { checked, createDecision, loadData } from '../src/backend.ts'
 
-test('local-only configuration rejects remote URLs, missing settings and privileged keys', () => {
+test('client configuration distinguishes local development from hosted demo builds', () => {
+  const jwt = role => `header.${btoa(JSON.stringify({ role }))}.signature`
+  const cloud = 'https://example.supabase.co'
   assert.throws(() => clientConfig(), /not configured/)
-  for (const url of ['https://example.supabase.co', 'http://127.0.0.1.evil.test', 'http://user:pass@localhost', 'http://localhost/remote']) assert.throws(() => localUrl(url))
-  const jwt = role => `header.${btoa(JSON.stringify({role}))}.signature`
-  assert.equal(clientConfig('http://127.0.0.1:54321', jwt('anon')).url, 'http://127.0.0.1:54321')
-  assert.throws(() => clientConfig('http://localhost:54321', jwt('service_role')), /Privileged/)
-  assert.throws(() => clientConfig('http://localhost:54321', 'sb_secret_fake'), /Privileged/)
+  assert.deepEqual(clientConfig(cloud, 'sb_publishable_example'), {
+    url: cloud, key: 'sb_publishable_example', environment: 'Demo environment',
+  })
+  assert.equal(clientConfig('http://127.0.0.1:54321', jwt('anon'), true).environment, 'Local test environment')
+  for (const url of ['http://127.0.0.1:54321', 'https://localhost.', 'https://127.0.0.2', 'https://[::1]']) {
+    assert.throws(() => clientConfig(url, jwt('anon')), /requires a hosted/)
+  }
+  for (const url of ['http://example.supabase.co', 'https://user:pass@example.supabase.co', `${cloud}/rest/v1`]) {
+    assert.throws(() => clientConfig(url, jwt('anon')))
+  }
+  for (const key of [jwt('service_role'), jwt('authenticated'), 'sb_secret_fake', 'sb_publishable_']) {
+    assert.throws(() => clientConfig(cloud, key), /Privileged/)
+  }
+})
+
+test('local tools accept only the local HTTP API origin', () => {
+  assert.equal(localUrl('http://127.0.0.1:54321'), 'http://127.0.0.1:54321')
+  for (const url of ['https://example.supabase.co', 'http://127.0.0.1.evil.test', 'http://user:pass@localhost', 'http://localhost/remote']) {
+    assert.throws(() => localUrl(url))
+  }
 })
 test('account invalidation rejects delayed requests, including an account switch back', async () => {
   const scope = requestScope()

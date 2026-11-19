@@ -1,8 +1,7 @@
 import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
 import { execFileSync } from 'node:child_process'
-import { createClient } from '@supabase/supabase-js'
-import { accounts, localSettings, localTestPassword, sql, venueId } from './local-tools.mjs'
+import { accounts, localClient, localSettings, localTestPassword, sql, venueId } from './local-tools.mjs'
 import { createDecision, liftDecision, loadData, memberships } from '../src/backend.ts'
 import { discardIncidentPhoto, photoRequest, submitIncident } from '../src/incident-photo-backend.ts'
 import { photoBucket, photoMaxBytes, validateIncidentPhoto } from '../src/incident-photo-files.ts'
@@ -12,7 +11,6 @@ const png = fileFrom('iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAIAAAD8GO2jAAAAKklEQVR4nG
 const jpeg = fileFrom('/9j/4AAQSkZJRgABAQAASABIAAD/4QBMRXhpZgAATU0AKgAAAAgAAYdpAAQAAAABAAAAGgAAAAAAA6ABAAMAAAABAAEAAKACAAQAAAABAAAAIKADAAQAAAABAAAAIAAAAAD/7QA4UGhvdG9zaG9wIDMuMAA4QklNBAQAAAAAAAA4QklNBCUAAAAAABDUHYzZjwCyBOmACZjs+EJ+/8AAEQgAIAAgAwEiAAIRAQMRAf/EAB8AAAEFAQEBAQEBAAAAAAAAAAABAgMEBQYHCAkKC//EALUQAAIBAwMCBAMFBQQEAAABfQECAwAEEQUSITFBBhNRYQcicRQygZGhCCNCscEVUtHwJDNicoIJChYXGBkaJSYnKCkqNDU2Nzg5OkNERUZHSElKU1RVVldYWVpjZGVmZ2hpanN0dXZ3eHl6g4SFhoeIiYqSk5SVlpeYmZqio6Slpqeoqaqys7S1tre4ubrCw8TFxsfIycrS09TV1tfY2drh4uPk5ebn6Onq8fLz9PX29/j5+v/EAB8BAAMBAQEBAQEBAQEAAAAAAAABAgMEBQYHCAkKC//EALURAAIBAgQEAwQHBQQEAAECdwABAgMRBAUhMQYSQVEHYXETIjKBCBRCkaGxwQkjM1LwFWJy0QoWJDThJfEXGBkaJicoKSo1Njc4OTpDREVGR0hJSlNUVVZXWFlaY2RlZmdoaWpzdHV2d3h5eoKDhIWGh4iJipKTlJWWl5iZmqKjpKWmp6ipqrKztLW2t7i5usLDxMXGx8jJytLT1NXW19jZ2uLj5OXm5+jp6vLz9PX29/j5+v/bAEMAAgICAgICAwICAwUDAwMFBgUFBQUGCAYGBgYGCAoICAgICAgKCgoKCgoKCgwMDAwMDA4ODg4ODw8PDw8PDw8PD//bAEMBAgICBAQEBwQEBxALCQsQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEP/dAAQAAv/aAAwDAQACEQMRAD8Ax6KKK0P4XCiiigD/0MeiiitD+FwooooA/9k=', 'image/jpeg')
 const webp = fileFrom('UklGRiIAAABXRUJQVlA4IBYAAAAwAQCdASoBAAEALmk0mk0iIiIiIgBoSygABc6zbAAA', 'image/webp')
 const noProgress = () => {}
-const options = { auth: { persistSession: false, autoRefreshToken: false } }
 const report = id => ({
   label: `Fictional photo test ${id.slice(0, 8)}`,
   occurredAt: new Date(Date.now() - 86400000).toISOString(),
@@ -22,8 +20,8 @@ const report = id => ({
 
 async function main() {
   const { url, anon, admin } = localSettings()
-  const fixtureAdmin = createClient(url, admin, options)
-  const makeClient = () => createClient(url, anon, options)
+  const fixtureAdmin = localClient(url, admin)
+  const makeClient = () => localClient(url, anon)
   const [owner, staff2, manager, outsider, inactive, anonymous] = Array.from({ length: 6 }, makeClient)
   const storage = client => client.storage.from(photoBucket)
   const otherVenue = randomUUID()
@@ -126,7 +124,7 @@ async function main() {
     await denied(outsider, attempt.reportId, path)
     await denied(inactive, attempt.reportId, path)
     await denied(anonymous, attempt.reportId, path, true)
-    assert.ok((await fetch(`${url}/storage/v1/object/public/${photoBucket}/${path}`)).status >= 400)
+    assert.ok((await fetch(`${url}/storage/v1/object/public/${photoBucket}/${path}`, { redirect: 'error' })).status >= 400)
     assert.ok((await storage(owner).createSignedUrl(path, 30)).error)
     assert.ok((await owner.from('incident_photos').delete().eq('report_id', attempt.reportId)).error)
 
@@ -230,6 +228,5 @@ async function main() {
 
 main().catch(error => {
   console.error('FAIL: local photo HTTP/JWT checks.', error.stack?.split('\n').filter(line => line.includes('test-local-photos.mjs:')).join('\n'))
-  if (error instanceof assert.AssertionError && typeof error.actual === 'object') console.error(error.actual?.message ?? '')
   process.exitCode = 1
 })

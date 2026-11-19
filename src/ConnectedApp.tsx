@@ -2,7 +2,6 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
 import { createClient } from '@supabase/supabase-js'
 import type { SupabaseClient, User } from '@supabase/supabase-js'
-import { clientConfig } from './local-config.ts'
 import { checked, createDecision, emptyData, liftDecision, loadData, loadTeamTotals, markUpdateRead, memberships } from './backend.ts'
 import type { Data, Incident, Membership, ServerDecision, TeamTotals, VenueUpdate } from './backend.ts'
 import { discardIncidentPhoto, submitIncident } from './incident-photo-backend.ts'
@@ -16,21 +15,24 @@ import { formatDate, incidentLabels, severityLabels } from './reports.ts'
 import './App.css'
 
 function message(e: unknown) { return e instanceof Error ? e.message : 'Unable to complete this request. Please try again.' }
+const settings: { url: string; key: string; environment: string } | { error: string } =
+  import.meta.env.TEAMBRIEF_SUPABASE
+
 export default function ConnectedApp() {
   const config = useMemo(() => {
+    if ('error' in settings) return settings
     try {
-      const c = clientConfig(import.meta.env.VITE_SUPABASE_URL, import.meta.env.VITE_SUPABASE_ANON_KEY)
-      return { client: createClient(c.url, c.key, { auth: {
+      return { environment: settings.environment, client: createClient(settings.url, settings.key, { auth: {
         storage: typeof window === 'undefined' ? undefined : window.sessionStorage,
-        storageKey: 'teambrief.auth.local',
+        storageKey: settings.environment === 'Local test environment' ? 'teambrief.auth.local' : `teambrief.auth.${new URL(settings.url).host}`,
       } }) }
     }
     catch (e) { return { error: message(e) } }
   }, [])
-  if (!config.client) return <main><h1>TeamBrief</h1><p className="error-banner" role="alert">{config.error}</p></main>
-  return <AuthApp client={config.client} />
+  if ('error' in config) return <main><h1>TeamBrief</h1><p className="error-banner" role="alert">{config.error}</p></main>
+  return <AuthApp client={config.client} environment={config.environment} />
 }
-export function AuthApp({ client }: { client: SupabaseClient }) {
+export function AuthApp({ client, environment }: { client: SupabaseClient; environment: string }) {
   const [user, setUser] = useState<User | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
@@ -58,10 +60,10 @@ export function AuthApp({ client }: { client: SupabaseClient }) {
     catch { setError('Sign out failed. Please retry signing out.'); }
   }
   if (loading) return <main><h1>TeamBrief</h1><p role="status">Loading your session…</p></main>
-  if (!user) return <Login client={client} error={error} retryLogout={logout} />
-  return <Account key={user.id} client={client} user={user} logout={logout} />
+  if (!user) return <Login client={client} environment={environment} error={error} retryLogout={logout} />
+  return <Account key={user.id} client={client} environment={environment} user={user} logout={logout} />
 }
-export function Login({ client, error: external = '', retryLogout }: { client: SupabaseClient; error?: string; retryLogout?: () => Promise<void> }) {
+export function Login({ client, environment, error: external = '', retryLogout }: { client: SupabaseClient; environment: string; error?: string; retryLogout?: () => Promise<void> }) {
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [error, setError] = useState('')
@@ -72,9 +74,9 @@ export function Login({ client, error: external = '', retryLogout }: { client: S
     catch (e) { setError(message(e)) }
     finally { setBusy(false) }
   }
-  return <main className="auth-page"><form className="panel report-form" onSubmit={submit}><h1>Sign in to TeamBrief</h1><p>Use your local team account. Access is assigned by your pub administrator.</p><div className="field"><label htmlFor="email">Email</label><input id="email" type="email" autoComplete="username" required value={email} onChange={e => setEmail(e.target.value)} /></div><div className="field"><label htmlFor="password">Password</label><input id="password" type="password" autoComplete="current-password" required value={password} onChange={e => setPassword(e.target.value)} /></div>{(error || external) && <p role="alert" className="error-banner">{error || external}</p>}<button className="primary" disabled={busy}>{busy ? 'Signing in…' : 'Sign in'}</button>{external && retryLogout && <button type="button" onClick={retryLogout}>Retry sign out</button>}</form></main>
+  return <main className="auth-page"><form className="panel report-form" onSubmit={submit}><h1>Sign in to TeamBrief</h1><p>{environment}</p><p>Sign in with the account provided by your pub administrator.</p><div className="field"><label htmlFor="email">Email</label><input id="email" type="email" autoComplete="username" required value={email} onChange={e => setEmail(e.target.value)} /></div><div className="field"><label htmlFor="password">Password</label><input id="password" type="password" autoComplete="current-password" required value={password} onChange={e => setPassword(e.target.value)} /></div>{(error || external) && <p role="alert" className="error-banner">{error || external}</p>}<button className="primary" disabled={busy}>{busy ? 'Signing in…' : 'Sign in'}</button>{external && retryLogout && <button type="button" onClick={retryLogout}>Retry sign out</button>}</form></main>
 }
-function Account({ client, user, logout }: { client: SupabaseClient; user: User; logout: () => Promise<void> }) {
+function Account({ client, user, logout, environment }: { client: SupabaseClient; environment: string; user: User; logout: () => Promise<void> }) {
   const [members, setMembers] = useState<Membership[] | null>(null)
   const [error, setError] = useState('')
   const [venue, setVenue] = useState('')
@@ -85,10 +87,10 @@ function Account({ client, user, logout }: { client: SupabaseClient; user: User;
     return () => { alive = false }
   }, [client, user.id, attempt])
   const member = members?.find(m => m.venueId === venue)
-  return <><header className={member ? "topbar account-topbar" : "topbar"}><strong>TeamBrief · {user.email}</strong><button className="secondary-button" onClick={logout}>Sign out</button></header>{error ? <main><p role="alert" className="error-banner">{error}</p><button onClick={() => { setMembers(null); setError(''); setAttempt(n => n + 1) }}>Retry</button></main> : !members ? <main role="status">Loading pub membership…</main> : !member ? <main><h1>Access not granted</h1><p>Your account has no active pub membership. Ask your pub administrator to assign access.</p></main> : <>{members.length > 1 && <label className="pub-picker">Pub <select value={venue} onChange={e => setVenue(e.target.value)}>{members.map(m => <option key={m.venueId} value={m.venueId}>{m.venueName}</option>)}</select></label>}<Workspace key={member.venueId} client={client} member={member} /></>}</>
+  return <><header className={member ? "topbar account-topbar" : "topbar"}><strong>TeamBrief · {user.email}</strong><button className="secondary-button" onClick={logout}>Sign out</button></header>{error ? <main><p role="alert" className="error-banner">{error}</p><button onClick={() => { setMembers(null); setError(''); setAttempt(n => n + 1) }}>Retry</button></main> : !members ? <main role="status">Loading pub membership…</main> : !member ? <main><h1>Access not granted</h1><p>Your account has no active pub membership. Ask your pub administrator to assign access.</p></main> : <>{members.length > 1 && <label className="pub-picker">Pub <select value={venue} onChange={e => setVenue(e.target.value)}>{members.map(m => <option key={m.venueId} value={m.venueId}>{m.venueName}</option>)}</select></label>}<Workspace key={member.venueId} client={client} member={member} environment={environment} /></>}</>
 }
 type Page = 'home' | 'create' | 'mine' | 'active' | 'review' | 'history'
-function Workspace({ client, member }: { client: SupabaseClient; member: Membership }) {
+function Workspace({ client, member, environment }: { client: SupabaseClient; member: Membership; environment: string }) {
   const [data, setData] = useState<Data>(emptyData)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
@@ -175,7 +177,7 @@ function Workspace({ client, member }: { client: SupabaseClient; member: Members
   }
   return <div className="app-shell"><aside className="sidebar"><a className="brand" href="#" onClick={e => { e.preventDefault(); navigate('home') }}>TeamBrief</a><p>{member.venueName}</p><nav aria-label="Main navigation" style={{ '--nav-count': manager ? 6 : 4 } as React.CSSProperties}>{(Object.keys(titles) as Page[]).filter(p => manager || !['review', 'history'].includes(p)).map(p => <button key={p} className={page === p ? 'nav-item active' : 'nav-item'} onClick={() => navigate(p)}>{titles[p]}</button>)}</nav><div className="profile">{member.name} · {manager ? 'Manager' : 'Staff'}</div></aside><div className="workspace"><main className="connected-workspace">
     <header className="connected-heading">
-      <div><h1>{titles[page]}</h1><p className="connected-context">{member.venueName}<span>Local test environment</span></p></div>
+      <div><h1>{titles[page]}</h1><p className="connected-context">{member.venueName}<span>{environment}</span></p></div>
       <div className="connected-actions">
         <button className="secondary-button" onClick={() => { void refresh().catch(() => {}) }}>Refresh</button>
         {page === 'home' && <button className="primary" onClick={() => navigate('create')}>Report incident</button>}

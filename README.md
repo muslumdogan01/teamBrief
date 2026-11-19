@@ -1,8 +1,8 @@
 # TeamBrief
 
-An English-only pub incident reporting and service-ban application using React, TypeScript, Vite and **local Supabase**. The normal entry point uses real email/password authentication and database memberships; there is no demo role selector.
+An English-only pub incident reporting and service-ban application using React, TypeScript, Vite and Supabase (local development or a hosted demo). The normal entry point uses real email/password authentication and database memberships; there is no demo role selector.
 
-## Run on this computer
+## Local development
 
 Docker Desktop and the existing local `teambrief` Supabase stack must be running with Storage enabled. No cloud project, link, deployment or remote database commands are needed.
 
@@ -31,7 +31,40 @@ Open `http://127.0.0.1:5173` (or the port Vite prints). The test account passwor
 | `staff2@teambrief.test` | Taylor Example | Staff |
 | `manager@teambrief.test` | Morgan Example | Manager |
 
-These accounts are fictional and local-only. Never commit `.env.test.local` or paste its password into documentation. The preparation and HTTP test scripts read it at runtime; there is no hard-coded account password. The script refuses non-loopback Supabase URLs and remote Docker sockets. It uses local administrative credentials only in the Node process and trusted container SQL; privileged credentials are never written to frontend configuration. It refuses to overwrite accounts with matching emails unless they carry the local fixture marker. Re-running preserves existing passwords and incident/decision records while restoring the fixture names and memberships.
+These accounts are fictional and local-only. Never commit `.env.test.local` or paste its password into documentation. The preparation and HTTP test scripts read it at runtime; there is no hard-coded account password. All local scripts discover the CLI’s local stack, refuse non-loopback API origins and remote Docker sockets, and block HTTP redirects. It uses local administrative credentials only in the Node process and trusted container SQL; privileged credentials are never written to frontend configuration. It refuses to overwrite accounts with matching emails unless they carry the local fixture marker. Re-running preserves existing passwords and incident/decision records while restoring the fixture names and memberships.
+
+## Invite-only online demo
+
+Use a designated Supabase project for fictional demo data. Confirm the project ref, existing schema and migration history, and the intended Vercel team/project and final HTTPS URL before setup. Keep the local fixture accounts, passwords, reports and photos on the development machine.
+
+### Supabase database and Storage
+
+1. Review the target project and its backup/export procedure. In the SQL Editor, inventory existing application tables, the `teambrief_private` schema, Auth triggers, the `incident-photos` bucket, and policies on `storage.objects` (via `pg_policies`). In particular, check whether `to_regprocedure('storage.allow_only_operation(text)')` resolves. Check for broad Storage policies that could also match this bucket, since permissive policies can grant access independently.
+2. From an authorized shell, link the Supabase CLI to the verified demo project and compare `supabase migration list --linked` with the repository. Review pending files and the plan from `supabase db push --linked --dry-run`. If the history differs, a migration object already exists without a matching history entry, or the Storage helper is unavailable, stop and reconcile the actual schema and history before applying anything. The base migration creates named objects and backfills **profiles only** for existing Auth users, so review that effect even when there are no TeamBrief tables. Use a trusted migration operator and apply only reviewed pending migrations after approval. [Supabase CLI reference](https://supabase.com/docs/reference/cli/supabase-db-push)
+3. Verify this migration order in the plan:
+
+   | Version | Purpose |
+   | --- | --- |
+   | `20261113000100` | TeamBrief schema, Auth profile trigger, RLS and RPCs |
+   | `20261118000100` | Recent Updates and read receipts |
+   | `20261118000200` | Private `incident-photos` bucket, photo metadata, upload reservations and Storage policies |
+   | `20261118000300` | Restricts the relevant Storage policies to regular upload and authenticated download operations |
+   | `20261118000400` | Active ban directory and totals |
+
+4. In Storage, verify that `incident-photos` is private, allows JPEG/PNG/WebP, and has a limit of 5,000,000 bytes. The migrations create the bucket and policies together. Review an existing bucket before applying the photo migration, which inserts that exact bucket ID. Verify signed/public downloads and unrelated users are denied, while the intended authenticated users can download under the app's access rules. [Supabase private buckets](https://supabase.com/docs/guides/storage/buckets/fundamentals)
+
+### Auth and demo accounts
+
+1. In **Authentication**, enable email/password sign-in, turn off **Allow new users to sign up** and anonymous sign-ins, and leave unused providers disabled for the demo. Once the final address is known, set **Site URL** to the exact demo HTTPS origin and add only exact approved redirect URLs under **URL Configuration**. [Auth settings](https://supabase.com/docs/guides/auth/general-configuration) · [Redirect URLs](https://supabase.com/docs/guides/auth/redirect-urls)
+2. After approval, in **Authentication → Users**, an administrator can create three dedicated demo test accounts with distinct strong passwords and administrator-verified emails. Use approved demo addresses and share credentials privately. The app signs users in with email and password. Its login page has no account creation or password setup form.
+3. In a transaction in the trusted SQL Editor, insert a fresh fictional pub in `public.venues` and record its new UUID. Verify the three intended Auth UUIDs and corresponding `public.profiles` rows. Give those profiles fictional display names and insert three active `public.venue_memberships` rows for the new pub, one `manager` and two `staff`. Check the new pub UUID, the three roles and active flags before committing. Abort on an unexpected existing association. Add sample incidents through the app using invented descriptions and synthetic images only.
+4. After deployment, smoke-test signed-out access, then sign in with a dedicated test account before giving it a membership and confirm **Access not granted**. Verify the two staff accounts cannot see each other's full incident reports and that their active-ban view exposes only the intended summary. Verify manager decisions, lifting, and photo access before and after a lift. Use fictional data throughout.
+
+### Vercel build setup
+
+- Select Node.js 22 (22.12 or newer), the **Vite** preset, repository root, `npm run build` and `dist`. Navigation uses in-memory state at the root URL. Refresh returns to **Home**, so no SPA rewrite is needed. Git-triggered deploys are disabled in `vercel.json` during preparation. Use a manual deploy once authorized, or explicitly enable Git deploys at that point. [Vite on Vercel](https://vercel.com/docs/frameworks/frontend/vite) · [Git deployment settings](https://vercel.com/docs/project-configuration/git-configuration)
+- Set `VITE_SUPABASE_URL` to the demo project's HTTPS origin and `VITE_SUPABASE_PUBLISHABLE_KEY` to its publishable key. For a legacy project, use `VITE_SUPABASE_ANON_KEY` instead. A publishable key takes precedence when both are set. Scope these variables to the intended Vercel environment. Keep all privileged keys and database credentials out of frontend variables.
+- The Vite dev server accepts the local loopback configuration. A production build requires hosted HTTPS settings and embeds only the validated public configuration. Missing or invalid settings show an English configuration error. Update environment variables and rebuild to fix the error. The UI labels the connection **Local test environment** or **Demo environment** based on the validated backend.
 
 ## Try the connected workflow
 

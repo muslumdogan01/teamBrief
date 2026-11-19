@@ -18,6 +18,7 @@ test('sign-in errors, sign-out, account switching and delayed old data are handl
   let delayOld = false
   let finishOldSearch
   const searchRequests = []
+  const unassignedQueries = []
   const readBy = new Set()
   const statusReports = ['Awaiting guest', 'Overdue guest', 'Lifted guest', 'Reviewed guest'].map((label, index) => {
     const id = `report-${index}`
@@ -39,6 +40,7 @@ test('sign-in errors, sign-out, account switching and delayed old data are handl
     },
     from(table) {
       const owner=identity
+      if (owner === 'no-membership') unassignedQueries.push(table)
       const query={select(){return query},eq(){return query},order(){return query},limit(){return query},single(){return Promise.resolve({data:{display_name:owner},error:null})},then(resolve,reject){
         if(table==='incident_reports' && owner==='one' && delayOld) return new Promise(r=>{delayed=r}).then(resolve,reject)
         if (owner === 'status-manager' && table === 'incident_reports') return Promise.resolve({ data: statusReports, error: null }).then(resolve, reject)
@@ -84,8 +86,9 @@ test('sign-in errors, sign-out, account switching and delayed old data are handl
   }
   try {
     const {AuthApp} = await server.ssrLoadModule('/src/ConnectedApp.tsx')
-    const ui=render(createElement(AuthApp,{client}))
+    const ui=render(createElement(AuthApp,{client, environment:'Demo environment'}))
     await waitFor(()=>assert.ok(ui.queryByText('Sign in to TeamBrief')))
+    assert.ok(ui.getByText('Demo environment'))
     fireEvent.change(ui.getByLabelText('Email'),{target:{value:'one@example.test'}})
     fireEvent.change(ui.getByLabelText('Password'),{target:{value:'wrong'}})
     fireEvent.click(ui.getByRole('button',{name:'Sign in'}))
@@ -167,6 +170,7 @@ test('sign-in errors, sign-out, account switching and delayed old data are handl
     await waitFor(()=>assert.ok(ui.queryByText('Access not granted')))
     assert.equal(ui.queryByText('PRIVATE_two'),null)
     assert.equal(ui.queryByRole('button',{name:'My Incidents'}),null)
+    assert.deepEqual(unassignedQueries, ['venue_memberships'])
   } finally {
     cleanup();await server.close();dom.window.close()
     for(const [key,descriptor] of previous) { if(descriptor) Object.defineProperty(globalThis,key,descriptor); else delete globalThis[key] }

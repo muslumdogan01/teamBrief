@@ -29,6 +29,7 @@ export const mapDecision = (r: Row): ServerDecision => ({ id: r.id, reportId: r.
 export function checked<T>({ data, error }: { data?: T; error: { message: string } | null }): T { if (error) throw new Error(error.message); return data as T }
 export async function memberships(client: SupabaseClient, userId: string): Promise<Membership[]> {
   const rows = checked(await client.from('venue_memberships').select('venue_id,role,venues(name)').eq('user_id', userId).eq('is_active', true)) ?? []
+  if (!rows.length) return []
   const profile = checked<Row | null>(await client.from('profiles').select('display_name').eq('id', userId).single())
   return rows.map((r: Row) => ({ venueId: r.venue_id, venueName: r.venues.name, userId, role: r.role === 'manager' ? 'manager' : 'employee', name: profile?.display_name ?? 'Team member' }))
 }

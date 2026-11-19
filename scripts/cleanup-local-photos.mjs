@@ -1,6 +1,5 @@
-import { createClient } from '@supabase/supabase-js'
 import { photoBucket } from '../src/incident-photo-files.ts'
-import { localSettings, sql } from './local-tools.mjs'
+import { localClient, localSettings, sql } from './local-tools.mjs'
 
 const uuid = '[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}'
 const expectedId = new RegExp(`^${uuid}$`)
@@ -11,7 +10,7 @@ async function cleanup() {
   if (!reportIds.every(id => expectedId.test(id))) throw new Error('Report IDs must be UUIDs')
   const reportFilter = reportIds.length ? `and report_id in (${reportIds.map(id => `'${id}'`).join(',')})` : ''
   const { url, admin } = localSettings()
-  const storage = createClient(url, admin, { auth: { persistSession: false, autoRefreshToken: false } }).storage.from(photoBucket)
+  const storage = localClient(url, admin).storage.from(photoBucket)
   // Close reservations before touching object bytes. This row lock serializes with
   // finalization and the Storage INSERT policy, so committed reports are excluded.
   const closed = sql(`

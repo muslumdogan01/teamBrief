@@ -1,6 +1,6 @@
 # Supabase preparation review
 
-Verified locally on 15 November 2026. The frontend now connects only to the running local Supabase stack with real email/password sessions. Existing browser demo records are untouched. No cloud project was linked or accessed; the existing migration was not reapplied or reset for this connection work.
+The local-only connection described in the historical checks below was verified on 15 November 2026. For the hosted demo, see the [online demo setup](../README.md#invite-only-online-demo) before linking or applying migrations. Existing browser demo records are untouched. No cloud project was linked or accessed; the existing migration was not reapplied or reset for this connection work.
 
 ## Files and verification status
 

@@ -1,11 +1,10 @@
-import { createClient } from '@supabase/supabase-js'
 import { chmodSync, existsSync, readFileSync, writeFileSync } from 'node:fs'
-import { accounts, localSettings, localTestPassword, sql, venueId } from './local-tools.mjs'
+import { accounts, localClient, localSettings, localTestPassword, sql, venueId } from './local-tools.mjs'
 async function main() {
   const password = localTestPassword()
   const { url, anon, admin } = localSettings()
   if (!anon || !admin) throw new Error('Local Supabase client/admin credentials are unavailable.')
-  const client = createClient(url, admin, { auth: { persistSession: false, autoRefreshToken: false } })
+  const client = localClient(url, admin)
   const users = []
   for (let page = 1; ; page++) {
     const { data, error } = await client.auth.admin.listUsers({ page, perPage: 100 })
@@ -27,7 +26,7 @@ async function main() {
   }
   sql(`begin;\ninsert into public.venues(id,name) values ('${venueId}','The Example Pub') on conflict(id) do nothing;\n` + prepared.map(a => `update public.profiles set display_name = '${a.name}' where id = '${a.id}';\ninsert into public.venue_memberships(venue_id,user_id,role,is_active) values ('${venueId}','${a.id}','${a.role}',true) on conflict(venue_id,user_id) do update set role=excluded.role,is_active=true;`).join('\n') + '\ncommit;')
   const existing = existsSync('.env.local') ? readFileSync('.env.local', 'utf8') : ''
-  const other = existing.split('\n').filter(l => !/^VITE_SUPABASE_(URL|ANON_KEY)=/.test(l)).join('\n').trim()
+  const other = existing.split('\n').filter(l => !/^VITE_SUPABASE_(URL|PUBLISHABLE_KEY|ANON_KEY)=/.test(l)).join('\n').trim()
   writeFileSync('.env.local', `${other ? other + '\n' : ''}VITE_SUPABASE_URL=${url}\nVITE_SUPABASE_ANON_KEY=${anon}\n`, { mode: 0o600 })
   chmodSync('.env.local', 0o600)
   console.log('Local pub and three test memberships are ready. Client configuration saved privately to .env.local. No incident records were changed.')
