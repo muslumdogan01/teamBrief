@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto'
 import { execFileSync } from 'node:child_process'
 import { createClient } from '@supabase/supabase-js'
 import { accounts, localSettings, localTestPassword, sql, venueId } from './local-tools.mjs'
-import { createDecision, liftDecision } from '../src/backend.ts'
+import { createDecision, liftDecision, loadData, memberships } from '../src/backend.ts'
 import { discardIncidentPhoto, photoRequest, submitIncident } from '../src/incident-photo-backend.ts'
 import { photoBucket, photoMaxBytes, validateIncidentPhoto } from '../src/incident-photo-files.ts'
 
@@ -115,6 +115,13 @@ async function main() {
     await assert.rejects(() => submitIncident(owner, venueId, { ...draft, label: 'Changed after save' }, attempt, noProgress), /already saved/)
     await allowed(owner, attempt.reportId, path)
     await allowed(manager, attempt.reportId, path)
+    for (const client of [owner, manager]) {
+      const { data: { user } } = await client.auth.getUser()
+      const [member] = await memberships(client, user.id)
+      const report = (await loadData(client, member)).incidents.find(r => r.id === attempt.reportId)
+      assert.deepEqual(report?.photo, { reportId: attempt.reportId, path })
+    }
+
     await denied(staff2, attempt.reportId, path)
     await denied(outsider, attempt.reportId, path)
     await denied(inactive, attempt.reportId, path)

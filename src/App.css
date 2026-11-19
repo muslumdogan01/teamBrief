@@ -203,3 +203,15 @@ button:disabled { cursor: wait; opacity: .65; }
   .ban-row .photo-open img { width: 3.4rem; height: 3.4rem; }
   .ban-row .photo-placeholder { min-height: 3.4rem; }
 }
+
+.status-report-row { display: flex; flex-direction: column; align-items: flex-start; gap: .4rem; }
+.status-row-heading, .status-row-dates { display: flex; align-items: baseline; flex-wrap: wrap; gap: .35rem .8rem; min-width: 0; }
+.status-row-heading strong, .status-explanation, .record-date { overflow-wrap: anywhere; min-width: 0; }
+.status-explanation { white-space: pre-wrap; }
+.record-date { color: #526253; font-size: .85rem; }
+.record-date time { font-weight: 650; }
+.badge.decision-status { white-space: normal; }
+.decision-status.awaiting-review { color: #765213; background: #faf0d6; }
+.decision-status.active-ban { color: #983c30; background: #fae6e1; }
+.decision-status.ban-lifted { color: #38603a; background: #e6f0df; }
+.decision-status.no-ban { color: #384f67; background: #e6eef5; }

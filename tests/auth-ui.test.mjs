@@ -10,7 +10,7 @@ test('sign-in errors, sign-out, account switching and delayed old data are handl
   for (const [key,value] of Object.entries({window:dom.window,document:dom.window.document,navigator:dom.window.navigator,HTMLElement:dom.window.HTMLElement,IS_REACT_ACT_ENVIRONMENT:true})) {
     previous.set(key,Object.getOwnPropertyDescriptor(globalThis,key)); Object.defineProperty(globalThis,key,{configurable:true,writable:true,value})
   }
-  const {render,fireEvent,waitFor,cleanup,act} = await import('@testing-library/react')
+  const {render,fireEvent,waitFor,cleanup,act,within} = await import('@testing-library/react')
   const server = await createServer({server:{middlewareMode:true,watch:null,ws:false},appType:'custom'})
   let listener
   let identity = null
@@ -19,6 +19,17 @@ test('sign-in errors, sign-out, account switching and delayed old data are handl
   let finishOldSearch
   const searchRequests = []
   const readBy = new Set()
+  const statusReports = ['Awaiting guest', 'Overdue guest', 'Lifted guest', 'Reviewed guest'].map((label, index) => {
+    const id = `report-${index}`
+    const initialBan = {
+      id: `decision-${index}`, report_id: id, kind: 'ban', explanation: 'Fictional decision reason',
+      severity: 'medium', instruction: 'Do not serve', decided_at: '2020-01-02',
+      review_at: '2020-01-03', lifted_at: null,
+    }
+    const decision = [[], [initialBan], [{ ...initialBan, lifted_at: '2020-01-04' }], [{ ...initialBan, kind: 'no-ban' }]][index]
+    return { id, label, reported_by: 'status-manager', occurred_at: '2020-01-01', created_at: '2020-01-01',
+      incident_type: 'other', severity: 'low', appearance: 'Fictional hat', description: 'Fictional report', decision, photo: [] }
+  })
   const client = {
     auth: {
       onAuthStateChange(fn) { listener=fn; return {data:{subscription:{unsubscribe(){}}}} },
@@ -28,9 +39,16 @@ test('sign-in errors, sign-out, account switching and delayed old data are handl
     },
     from(table) {
       const owner=identity
-      const query={select(){return query},eq(){return query},order(){return query},single(){return Promise.resolve({data:{display_name:owner},error:null})},then(resolve,reject){
+      const query={select(){return query},eq(){return query},order(){return query},limit(){return query},single(){return Promise.resolve({data:{display_name:owner},error:null})},then(resolve,reject){
         if(table==='incident_reports' && owner==='one' && delayOld) return new Promise(r=>{delayed=r}).then(resolve,reject)
-        const data = table==='venue_memberships' ? (owner==='no-membership' ? [] : [{venue_id:'pub',role:'staff',venues:{name:'Test Pub'}}]) : table==='incident_reports' ? [{id:owner,label:`PRIVATE_${owner}`,reported_by:owner,occurred_at:'2020-01-01',created_at:'2020-01-01',incident_type:'other',severity:'low',appearance:'Hat',description:`Description ${owner}`}] : []
+        if (owner === 'status-manager' && table === 'incident_reports') return Promise.resolve({ data: statusReports, error: null }).then(resolve, reject)
+        if (owner === 'status-manager' && table === 'decisions') {
+          return Promise.resolve({ data: statusReports.flatMap(r => r.decision), error: null }).then(resolve, reject)
+        }
+        if (owner === 'missing-decision' && table === 'incident_reports') {
+          return Promise.resolve({ data: [{ ...statusReports[0], decision: undefined }], error: null }).then(resolve, reject)
+        }
+        const data = table==='venue_memberships' ? (owner==='no-membership' ? [] : [{venue_id:'pub',role:owner === 'status-manager' ? 'manager' : 'staff',venues:{name:'Test Pub'}}]) : table==='incident_reports' ? [{id:owner,label:`PRIVATE_${owner}`,reported_by:owner,occurred_at:'2020-01-01',created_at:'2020-01-01',incident_type:'other',severity:'low',appearance:'Hat',description:`Description ${owner}`,decision:[],photo:[]}] : []
         return Promise.resolve({data,error:null}).then(resolve,reject)
       }}; return query
     },
@@ -120,6 +138,31 @@ test('sign-in errors, sign-out, account switching and delayed old data are handl
     assert.equal(ui.queryByText('LEAKED_OLD_USER'),null)
     assert.equal(ui.queryByText('PRIVATE_one'),null)
     assert.equal(ui.queryByLabelText('Demo profile'),null)
+    await act(async () => { identity = 'status-manager'; listener('SIGNED_IN', { user: { id: identity, email: 'manager@example.test' } }) })
+    await waitFor(() => assert.ok(ui.getByRole('heading', { name: 'Home' })))
+    fireEvent.click(ui.getByRole('button', { name: 'My Incidents', exact: true }))
+    const row = label => within(ui.getByText(label, { exact: true }).closest('li'))
+    for (const [label, status] of [
+      ['Awaiting guest', 'Awaiting review'], ['Overdue guest', 'Active ban'],
+      ['Lifted guest', 'Ban lifted'], ['Reviewed guest', 'No ban required'],
+    ]) {
+      await waitFor(() => assert.ok(row(label).getByText(status)))
+      assert.ok(row(label).getByText('Incident date'))
+    }
+    fireEvent.click(ui.getByRole('button', { name: 'Decision history', exact: true }))
+    assert.equal(ui.queryByText('Awaiting guest'), null)
+    assert.ok(row('Overdue guest').getByText('Active ban'))
+    assert.ok(row('Overdue guest').getByText('Decision date'))
+    assert.equal(row('Overdue guest').queryByText('Lifted date'), null)
+    assert.ok(row('Lifted guest').getByText('Ban lifted'))
+    assert.ok(row('Lifted guest').getByText('Lifted date'))
+    assert.ok(row('Reviewed guest').getByText('No ban required'))
+
+    await act(async () => { identity = 'missing-decision'; listener('SIGNED_IN', { user: { id: identity, email: 'missing@example.test' } }) })
+    await ui.findByText('Incident decision data is unavailable.')
+    fireEvent.click(ui.getByRole('button', { name: 'My Incidents', exact: true }))
+    assert.equal(ui.queryByText('Awaiting review', { exact: true }), null)
+
     await act(async()=>{identity='no-membership';listener('SIGNED_IN',{user:{id:'no-membership',email:'none@example.test'}})})
     await waitFor(()=>assert.ok(ui.queryByText('Access not granted')))
     assert.equal(ui.queryByText('PRIVATE_two'),null)

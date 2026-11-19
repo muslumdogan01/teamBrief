@@ -11,6 +11,7 @@ import { ActiveBanDetail, ActiveBanDirectory } from './ActiveBanDirectory.tsx'
 import { IncidentPhoto } from './IncidentPhoto.tsx'
 import { requestScope, runMutation } from './session-state.ts'
 import { DecisionForm, LiftForm, ReportForm } from './App.tsx'
+import { decisionStatus, decisionStatusLabels } from './decision-status.ts'
 import { formatDate, incidentLabels, severityLabels } from './reports.ts'
 import './App.css'
 
@@ -146,10 +147,11 @@ function Workspace({ client, member }: { client: SupabaseClient; member: Members
       return failure
     }
   }
+  const incidentsById = useMemo(() => new Map(data.incidents.map(report => [report.id, report])), [data.incidents])
   const mine = data.incidents.filter(r => r.reportedBy === member.userId)
-  const pending = data.incidents.filter(r => !data.decisions.some(d => d.reportId === r.id))
-  const incident = data.incidents.find(r => r.id === selected)
-  const decision = data.decisions.find(d => d.id === selected || d.reportId === selected)
+  const pending = data.incidents.filter(r => !r.decision)
+  const incident = selected ? incidentsById.get(selected) : undefined
+  const historyDecision = page === 'history' ? data.decisions.find(d => d.id === selected) : undefined
   const titles: Record<Page, string> = { home: 'Home', create: 'Report Incident', mine: 'My Incidents', active: 'Active Decisions', review: 'Management', history: 'Decision history' }
   const directoryPage = page === 'home' || page === 'active'
   const banProps = { client, venueId: member.venueId, now, refreshVersion }
@@ -159,10 +161,18 @@ function Workspace({ client, member }: { client: SupabaseClient; member: Members
   function decisionView(d: ServerDecision) {
     return <section className="panel detail"><h2>{d.kind === 'no-ban' ? 'No ongoing ban required' : d.liftedAt ? 'Service ban lifted' : 'Active service ban'}</h2><p>{d.explanation}</p><p>Decided by account: {d.decidedBy} · {formatDate(d.decidedAt)}</p>{d.kind === 'ban' && <><p className="service-instruction">{d.instruction}</p><p>{severityLabels[d.severity!]} severity · Review due: {formatDate(d.reviewAt!)}</p>{!d.liftedAt && Date.parse(d.reviewAt!) <= now && <p className="review-warning">Review overdue. The ban remains active until a manager lifts it.</p>}<p className="info-note">Low severity does not permit service. Follow the service instructions.</p>{d.liftedAt ? <p>Lifted by account {d.liftedBy} · {formatDate(d.liftedAt)} · {d.liftReason}</p> : manager && <LiftForm key={d.id} showServiceNote onSave={(reason, note) => mutate(() => liftDecision(client, member.venueId, d.id, reason, note), page)} />}</>}<h3>Decision history</h3>{data.history.filter(h => h.decisionId === d.id).map(h => <p key={h.id}>{h.event} · {formatDate(h.at)} · Account {h.actorId} · {h.reason}</p>)}{!data.history.some(h => h.decisionId === d.id) && <p>History is available to the reporting employee and pub managers.</p>}</section>
   }
-  function incidentPhoto(reportId: string, label: string, compact = false) {
-    return <IncidentPhoto key={reportId} client={client} photo={data.photos.find(p => p.reportId === reportId)} label={label} compact={compact} />
+  function incidentPhoto(report: Incident, compact = false) {
+    return <IncidentPhoto key={report.id} client={client} photo={report.photo} label={report.label} compact={compact} />
   }
-  function list(items: Incident[]) { return items.length ? <ul className="report-list">{items.map(r => <li key={r.id} className="report-with-photo">{incidentPhoto(r.id, r.label, true)}<button className="report-row" onClick={() => setSelected(r.id)}><strong>{r.label}</strong><span>{formatDate(r.occurredAt)}</span></button></li>)}</ul> : <p className="empty">No incidents to show.</p> }
+  function list(items: Incident[], showStatus: boolean) {
+    return items.length ? <ul className="report-list">{items.map(report => <li key={report.id} className="report-with-photo">
+      {incidentPhoto(report, true)}
+      <button className="report-row status-report-row" onClick={() => setSelected(report.id)}>
+        <span className="status-row-heading"><strong>{report.label}</strong>{showStatus && <DecisionStatus decision={report.decision} />}</span>
+        <StatusDate label="Incident date" value={report.occurredAt} />
+      </button>
+    </li>)}</ul> : <p className="empty">No incidents to show.</p>
+  }
   return <div className="app-shell"><aside className="sidebar"><a className="brand" href="#" onClick={e => { e.preventDefault(); navigate('home') }}>TeamBrief</a><p>{member.venueName}</p><nav aria-label="Main navigation" style={{ '--nav-count': manager ? 6 : 4 } as React.CSSProperties}>{(Object.keys(titles) as Page[]).filter(p => manager || !['review', 'history'].includes(p)).map(p => <button key={p} className={page === p ? 'nav-item active' : 'nav-item'} onClick={() => navigate(p)}>{titles[p]}</button>)}</nav><div className="profile">{member.name} · {manager ? 'Manager' : 'Staff'}</div></aside><div className="workspace"><main className="connected-workspace">
     <header className="connected-heading">
       <div><h1>{titles[page]}</h1><p className="connected-context">{member.venueName}<span>Local test environment</span></p></div>
@@ -187,28 +197,44 @@ function Workspace({ client, member }: { client: SupabaseClient; member: Members
     {loading ? (!directoryPage && <p role="status">Loading team records…</p>) : (error && page !== 'create') || !allowed
       ? (!directoryPage && <p>Records are unavailable. Refresh to try again.</p>) : <>
     {page === 'create' && <ConnectedReportForm client={client} member={member} save={write => mutate(write, 'mine', true)} />}
-    {(page === 'mine' || page === 'review') && (incident ? <><button onClick={() => setSelected(null)}>← Back</button><FullIncident incident={incident}>{incidentPhoto(incident.id, incident.label)}</FullIncident>{decision ? decisionView(decision) : page === 'review' && manager ? <DecisionForm actor={member.name} key={incident.id} onSave={draft => mutate(() => createDecision(client, member.venueId, incident.id, draft), 'review')} /> : <p>Awaiting review.</p>}</> : list(page === 'mine' ? mine : pending))}
+    {(page === 'mine' || page === 'review') && (incident ? <><button onClick={() => setSelected(null)}>← Back</button><FullIncident incident={incident}>{incidentPhoto(incident)}</FullIncident>{incident.decision ? decisionView(incident.decision) : page === 'review' && manager ? <DecisionForm actor={member.name} key={incident.id} onSave={draft => mutate(() => createDecision(client, member.venueId, incident.id, draft), 'review')} /> : <p>Awaiting review.</p>}</> : list(page === 'mine' ? mine : pending, page === 'mine'))}
     {(page === 'home' || page === 'active') && <RecentUpdates updates={data.updates} onRead={async id => {
       const ticket = lifetime.ticket()
       await runMutation(() => markUpdateRead(client, member.venueId, id), async () => {
         if (lifetime.current(ticket)) await refresh()
       })
     }} />}
-    {page === 'history' && manager && (decision ? <>
+    {page === 'history' && manager && (historyDecision ? <>
       <button onClick={() => setSelected(null)}>← Back</button>
       {(() => {
-        const report = data.incidents.find(r => r.id === decision.reportId)
-        return report && <FullIncident incident={report}>{incidentPhoto(report.id, report.label)}</FullIncident>
+        const report = incidentsById.get(historyDecision.reportId)
+        return report && <FullIncident incident={report}>{incidentPhoto(report)}</FullIncident>
       })()}
-      {decisionView(decision)}
+      {decisionView(historyDecision)}
     </> : data.decisions.length ? <ul className="report-list">{data.decisions.map(d => {
-      const label = data.incidents.find(r => r.id === d.reportId)?.label ?? 'Incident'
-      return <li key={d.id} className="report-with-photo">{incidentPhoto(d.reportId, label, true)}
-        <button className="report-row" onClick={() => setSelected(d.id)}><strong>{label}</strong><span>{d.explanation}</span><span>{formatDate(d.decidedAt)}</span></button>
+      const report = incidentsById.get(d.reportId)
+      return <li key={d.id} className="report-with-photo">
+        {report && incidentPhoto(report, true)}
+        <button className="report-row status-report-row" onClick={() => setSelected(d.id)}>
+          <span className="status-row-heading"><strong>{report?.label ?? 'Incident'}</strong><DecisionStatus decision={d} /></span>
+          <span className="status-explanation">{d.explanation}</span>
+          <span className="status-row-dates">
+            <StatusDate label="Decision date" value={d.decidedAt} />
+            {d.liftedAt && <StatusDate label="Lifted date" value={d.liftedAt} />}
+          </span>
+        </button>
       </li>
     })}</ul> : <p className="empty">No decisions yet.</p>)}
   </>}</main></div></div>
 }
+function DecisionStatus({ decision }: { decision: ServerDecision | null }) {
+  const status = decisionStatus(decision)
+  return <span className={`badge decision-status ${status}`}>{decisionStatusLabels[status]}</span>
+}
+function StatusDate({ label, value }: { label: string; value: string }) {
+  return <span className="record-date">{label} <time dateTime={value}>{formatDate(value)}</time></span>
+}
+
 function ConnectedReportForm({ client, member, save }: {
   client: SupabaseClient
   member: Membership

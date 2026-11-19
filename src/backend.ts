@@ -2,15 +2,29 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import type { IncidentType, Severity, ReportDraft } from './reports.ts'
 import type { DecisionDraft } from './decisions.ts'
 export type Membership = { venueId: string; venueName: string; userId: string; role: 'employee' | 'manager'; name: string }
-export type Incident = { id: string; label: string; occurredAt: string; createdAt: string; incidentType: IncidentType; severity: Severity; appearance: string; description: string; reportedBy: string }
+export type Incident = { id: string; label: string; occurredAt: string; createdAt: string; incidentType: IncidentType; severity: Severity; appearance: string; description: string; reportedBy: string; decision: ServerDecision | null; photo?: IncidentPhotoRef }
 export type ServerDecision = { id: string; reportId: string; kind: 'ban' | 'no-ban'; explanation: string; severity: Severity | null; instruction: string | null; reviewAt: string | null; decidedBy: string; decidedAt: string; liftedAt: string | null; liftedBy: string | null; liftReason: string | null }
 export type History = { id: string; decisionId: string; event: string; actorId: string; at: string; reason: string }
 export type VenueUpdate = { id: string; eventType: 'ban_lifted'; personLabel: string; serviceNote: string; occurredAt: string; readAt: string | null }
 export type IncidentPhotoRef = { reportId: string; path: string }
-export type Data = { incidents: Incident[]; decisions: ServerDecision[]; history: History[]; updates: VenueUpdate[]; photos: IncidentPhotoRef[] }
-export const emptyData = (): Data => ({ incidents: [], decisions: [], history: [], updates: [], photos: [] })
+export type Data = { incidents: Incident[]; decisions: ServerDecision[]; history: History[]; updates: VenueUpdate[] }
+export const emptyData = (): Data => ({ incidents: [], decisions: [], history: [], updates: [] })
 type Row = Record<string, any>
-export const mapIncident = (r: Row): Incident => ({ id: r.id, label: r.label, occurredAt: r.occurred_at, createdAt: r.created_at, incidentType: r.incident_type, severity: r.severity, appearance: r.appearance, description: r.description, reportedBy: r.reported_by })
+function relatedRow(value: Row | Row[] | null | undefined) {
+  return (Array.isArray(value) ? value[0] : value) ?? null
+}
+export function mapIncident(r: Row): Incident {
+  if (r.decision === undefined) throw new Error('Incident decision data is unavailable.')
+  const decision = relatedRow(r.decision)
+  const photo = relatedRow(r.photo)
+  return {
+    id: r.id, label: r.label, occurredAt: r.occurred_at, createdAt: r.created_at,
+    incidentType: r.incident_type, severity: r.severity, appearance: r.appearance,
+    description: r.description, reportedBy: r.reported_by,
+    decision: decision ? mapDecision(decision) : null,
+    photo: photo ? { reportId: r.id, path: photo.object_path } : undefined,
+  }
+}
 export const mapDecision = (r: Row): ServerDecision => ({ id: r.id, reportId: r.report_id, kind: r.kind, explanation: r.explanation, severity: r.severity, instruction: r.instruction, reviewAt: r.review_at, decidedBy: r.decided_by, decidedAt: r.decided_at, liftedAt: r.lifted_at, liftedBy: r.lifted_by, liftReason: r.lift_reason })
 export function checked<T>({ data, error }: { data?: T; error: { message: string } | null }): T { if (error) throw new Error(error.message); return data as T }
 export async function memberships(client: SupabaseClient, userId: string): Promise<Membership[]> {
@@ -18,19 +32,47 @@ export async function memberships(client: SupabaseClient, userId: string): Promi
   const profile = checked<Row | null>(await client.from('profiles').select('display_name').eq('id', userId).single())
   return rows.map((r: Row) => ({ venueId: r.venue_id, venueName: r.venues.name, userId, role: r.role === 'manager' ? 'manager' : 'employee', name: profile?.display_name ?? 'Team member' }))
 }
+const recordBatchSize = 200
+async function loadVenueRows(
+  client: SupabaseClient, venueId: string, table: string, columns: string, timeColumn: string,
+  options: { author?: string; singleBatch?: boolean } = {},
+): Promise<Row[]> {
+  const rows: Row[] = []
+  let cursor: Row | undefined
+  for (;;) {
+    let query = client.from(table).select(columns).eq('venue_id', venueId)
+      .order(timeColumn, { ascending: false }).order('id', { ascending: false }).limit(options.singleBatch ? 1000 : recordBatchSize)
+    if (options.author) query = query.eq('reported_by', options.author)
+    if (cursor) {
+      const time = cursor[timeColumn]
+      query = query.or(`${timeColumn}.lt.${time},and(${timeColumn}.eq.${time},id.lt.${cursor.id})`)
+    }
+    const batch = (checked(await query) ?? []) as Row[]
+    rows.push(...batch)
+    if (options.singleBatch || batch.length < recordBatchSize) return rows
+    cursor = batch.at(-1)
+  }
+}
+
 export async function loadData(client: SupabaseClient, member: Membership): Promise<Data> {
-  // Staff never request cross-author full incidents, even though RLS also protects them.
-  let reports = client.from('incident_reports').select('*').eq('venue_id', member.venueId)
-  if (member.role !== 'manager') reports = reports.eq('reported_by', member.userId)
-  const results = await Promise.all([
-    reports.order('created_at', { ascending: false }),
-    client.from('decisions').select('*').eq('venue_id', member.venueId).order('decided_at', { ascending: false }),
-    client.rpc('get_recent_updates', { p_venue_id: member.venueId }),
-    client.from('incident_photos').select('report_id,object_path').eq('venue_id', member.venueId),
-    client.from('decision_history').select('*').eq('venue_id', member.venueId).order('occurred_at', { ascending: true }),
+  const { venueId } = member
+  const staff = member.role !== 'manager'
+  // Embed the matching decision in each visible report. The general decision
+  // list is independent and its page boundary cannot change an incident's status.
+  const [incidents, decisions, updates, history] = await Promise.all([
+    loadVenueRows(client, venueId, 'incident_reports',
+      '*,decision:decisions!decisions_venue_id_report_id_fkey(*),photo:incident_photos(object_path)',
+      'created_at', { author: staff ? member.userId : undefined }),
+    loadVenueRows(client, venueId, 'decisions', '*', 'decided_at', { singleBatch: staff }),
+    client.rpc('get_recent_updates', { p_venue_id: venueId }).then(r => (checked(r) ?? []) as Row[]),
+    loadVenueRows(client, venueId, 'decision_history', '*', 'occurred_at'),
   ])
-  const [incidents, decisions, updates, photos, history] = results.map(r => checked(r) ?? [])
-  return { photos: photos.map((r: Row) => ({ reportId: r.report_id, path: r.object_path })), updates: updates.map((r: Row) => ({ id: r.id, eventType: r.event_type, personLabel: r.person_label, serviceNote: r.service_note, occurredAt: r.occurred_at, readAt: r.read_at })), incidents: incidents.map(mapIncident), decisions: decisions.map(mapDecision), history: history.map((r: Row) => ({ id: r.id, decisionId: r.decision_id, event: r.event_type, actorId: r.actor_id, at: r.occurred_at, reason: r.reason })) }
+  return {
+    incidents: incidents.map(mapIncident),
+    decisions: decisions.map(mapDecision),
+    updates: updates.map(r => ({ id: r.id, eventType: r.event_type, personLabel: r.person_label, serviceNote: r.service_note, occurredAt: r.occurred_at, readAt: r.read_at })),
+    history: history.reverse().map(r => ({ id: r.id, decisionId: r.decision_id, event: r.event_type, actorId: r.actor_id, at: r.occurred_at, reason: r.reason })),
+  }
 }
 export async function createIncident(client: SupabaseClient, venueId: string, d: ReportDraft) {
   return checked(await client.rpc('create_incident_report', { p_venue_id: venueId, p_label: d.label, p_occurred_at: new Date(d.occurredAt).toISOString(), p_incident_type: d.incidentType, p_severity: d.severity, p_appearance: d.appearance, p_description: d.description }))

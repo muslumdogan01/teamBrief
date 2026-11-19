@@ -49,6 +49,12 @@ Low severity never permits service while a ban is active. Review-overdue bans re
 
 On **Home** or **Active Decisions**, search the full active list for a case-insensitive substring of a person label or physical description. Home applies its display limit to matching results. **View all results** carries the search into **Active Decisions**, where **Next** and **Previous** navigate 20 results at a time. Clear the field to restore the default list. Pages are ordered by decision time and then decision UUID, with live data and a cursor over both values. A lift removes the entry on refresh. New bans created while browsing older pages are visible on the first page. **My Incidents** remains the list of reports you submitted.
 
+## Incident and decision status
+
+**My Incidents** shows the incident date and derives each badge from the report's linked decision: **Awaiting review**, **Active ban**, **Ban lifted** or **No ban required**. **Decision history** includes active bans, lifted bans and no-ban decisions. It shows the decision date for every row and the lifted date when applicable. An overdue review leaves the ban active.
+
+The incident query embeds the linked decision and photo metadata under the existing access policies. Status does not depend on the separate decision list or a new database column. Loading errors leave the affected lists unavailable until a successful refresh. Records are loaded in batches with date and ID cursors so the manager's history can include older decisions.
+
 ## Data boundaries
 
 `src/backend.ts` maps SQL snake_case/UUIDs to separate connected TypeScript models and maps `staff` to the existing UI role `employee`. It uses Supabase RPCs for submission, decisions, lifting, the active-ban directory, exact totals, Recent Updates and marking updates as read. A lift writes the audit entry and team update in the same transaction. Existing lifted bans are not backfilled. Staff full-report queries explicitly filter by their own account in addition to server RLS. Names of other accounts are not exposed by the existing profiles policy, so report/decision/history actor fields display account UUIDs; no broader profile access was added.

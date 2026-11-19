@@ -2,7 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { clientConfig, localUrl } from '../src/local-config.ts'
 import { requestScope, runMutation } from '../src/session-state.ts'
-import { checked, createDecision } from '../src/backend.ts'
+import { checked, createDecision, loadData } from '../src/backend.ts'
 
 test('local-only configuration rejects remote URLs, missing settings and privileged keys', () => {
   assert.throws(() => clientConfig(), /not configured/)
@@ -34,4 +34,40 @@ test('no-ban adapter sends explicit NULL ban fields instead of demo values', asy
   let params
   await createDecision({rpc: async (name, input) => { assert.equal(name, 'create_decision'); params = input; return {data: 'uuid',error:null} }}, 'venue', 'report', {kind:'no-ban',explanation:'Reason',severity:'high',instruction:'ignored',reviewAt:'invalid'})
   assert.deepEqual(params, {p_venue_id:'venue',p_report_id:'report',p_kind:'no-ban',p_explanation:'Reason',p_severity:null,p_instruction:null,p_review_at:null})
+})
+
+test('manager history continues past the first batch when decision timestamps tie', async () => {
+  const timestamp = '2026-11-18T10:00:00.000000+00:00'
+  const decisions = Array.from({ length: 201 }, (_, index) => ({
+    id: `60000000-0000-0000-0000-${String(201 - index).padStart(12, '0')}`,
+    decided_at: timestamp,
+    kind: 'no-ban',
+  }))
+  const requests = []
+  const client = {
+    from(table) {
+      let cursor
+      let limit
+      const query = {
+        select: () => query,
+        eq: () => query,
+        order: () => query,
+        limit(value) { limit = value; return query },
+        or(value) { cursor = value; return query },
+        then(resolve) {
+          const start = cursor ? 200 : 0
+          if (table === 'decisions') requests.push({ cursor, limit })
+          return Promise.resolve({ data: table === 'decisions' ? decisions.slice(start, start + limit) : [], error: null }).then(resolve)
+        },
+      }
+      return query
+    },
+    rpc: async () => ({ data: [], error: null }),
+  }
+  const data = await loadData(client, { venueId: 'pub', role: 'manager' })
+  assert.deepEqual(requests, [
+    { cursor: undefined, limit: 200 },
+    { cursor: `decided_at.lt.${timestamp},and(decided_at.eq.${timestamp},id.lt.${decisions[199].id})`, limit: 200 },
+  ])
+  assert.deepEqual(data.decisions.map(d => d.id), decisions.map(d => d.id))
 })
