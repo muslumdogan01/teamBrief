@@ -6,6 +6,7 @@ import { createServer } from 'vite'
 
 test('sign-in errors, sign-out, account switching and delayed old data are handled by the UI', async () => {
   const dom = new JSDOM('<!doctype html><html><body></body></html>', {url:'http://localhost'})
+  dom.window.scrollTo = () => {}
   const previous = new Map()
   for (const [key,value] of Object.entries({window:dom.window,document:dom.window.document,navigator:dom.window.navigator,HTMLElement:dom.window.HTMLElement,IS_REACT_ACT_ENVIRONMENT:true})) {
     previous.set(key,Object.getOwnPropertyDescriptor(globalThis,key)); Object.defineProperty(globalThis,key,{configurable:true,writable:true,value})
@@ -159,24 +160,24 @@ test('sign-in errors, sign-out, account switching and delayed old data are handl
     manyUpdates = true
     fireEvent.click(within(ui.getByRole('navigation')).getByRole('button', { name: 'Home' }))
     const recent = within(ui.getByRole('region', { name: 'Recent Updates' }))
-    await recent.findByText('Unread in this pub: 20')
+    await recent.findByLabelText('Unread in this pub: 20')
     await waitFor(() => assert.equal(recent.getAllByRole('listitem').length, 5))
     assert.equal(recent.getAllByText('Ban lifted').length, 5)
-    assert.ok(recent.getByText('This is a past update. Check Active Decisions for current restrictions.'))
-    assert.ok(recent.getByRole('link', { name: 'Active Decisions' }))
+    const activeLink = recent.getByRole('link', { name: 'Active Decisions' })
+    assert.equal(activeLink.parentElement.textContent, 'Past updates. Check Active Decisions for current restrictions.')
     await recent.findByText('Photo unavailable')
     assert.ok(recent.getAllByText('No photo').length)
     const photo = await recent.findByRole('button', { name: 'View incident photo for History guest 2' })
     const [dialog] = photo.parentElement.getElementsByTagName('dialog')
     dialog.showModal = () => { dialog.open = true }
     const photoUrl = photo.querySelector('img').src
-    assert.equal((await fetch(photoUrl)).ok, true)
+    await act(async () => { assert.equal((await fetch(photoUrl)).ok, true) })
     fireEvent.click(photo)
     assert.ok(dialog.open)
     fireEvent.click(recent.getByRole('button', { name: 'View all updates' }))
     assert.ok(ui.getByRole('heading', { name: 'Updates', exact: true }))
     assert.equal(dialog.isConnected, false)
-    await assert.rejects(() => fetch(photoUrl))
+    await act(async () => { await assert.rejects(() => fetch(photoUrl)) })
     const history = within(ui.getByRole('region', { name: 'Lift history' }))
     await waitFor(() => assert.equal(history.getAllByRole('listitem').length, 20))
     fireEvent.click(history.getByRole('button', { name: 'Next' }))

@@ -34,22 +34,26 @@ export function Updates({ client, venueId, refreshVersion, recent, onAll, onActi
     } catch { setReadError(true) }
     finally { setSaving(null) }
   }
-  return <section className="panel detail recent-updates" aria-label={recent ? 'Recent Updates' : 'Lift history'}>
-    {recent ? <h2>Recent Updates</h2> : <div className="ban-search">
-      <label htmlFor="updates-search">Search by person label or physical description</label>
-      <div>
+  return <section className="panel recent-updates" aria-label={recent ? 'Recent Updates' : 'Lift history'}>
+    <header className="updates-header">
+      <div className="updates-heading">
+        {recent ? <h2>Recent Updates</h2> : <label htmlFor="updates-search">Search by person label or physical description</label>}
+        {unread !== null && <span className="updates-unread" role="status" aria-label={`Unread in this pub: ${unread}`}>{unread} unread</span>}
+      </div>
+      {!recent && <div className="updates-search">
         <input id="updates-search" type="search" maxLength={200} value={query} onChange={e => setQuery(e.target.value)} />
         {query && <button className="secondary-button" onClick={() => setQuery('')}>Clear</button>}
-      </div>
-    </div>}
-    <p className="info-note">This is a past update. Check Active Decisions for current restrictions.</p>
-    <a className="text-button" href="#active-decisions" onClick={event => { event.preventDefault(); onActive() }}>Active Decisions</a>
+      </div>}
+      <p className="updates-help">Past updates. Check <a href="#active-decisions"
+        onClick={event => { event.preventDefault(); onActive() }}>Active Decisions</a> for current restrictions.</p>
+    </header>
     {readError && <p className="error-banner" role="alert">Could not mark the update as read. Please try again.</p>}
-    {unread !== null && <p className="muted">Unread in this pub: {unread}</p>}
     <UpdatePages key={query.trim()} client={client} venueId={venueId} refreshVersion={refreshVersion}
       recent={recent} query={query.trim()}
       readRevision={readRevision} saving={saving} onRead={read} />
-    {recent && <button className="secondary-button" onClick={onAll}>View all updates</button>}
+    {recent && <div className="updates-footer">
+      <button className="secondary-button" onClick={onAll}>View all updates</button>
+    </div>}
   </section>
 }
 
@@ -74,22 +78,28 @@ function UpdatePages({ client, venueId, refreshVersion, recent, query, readRevis
   const { result, failed } = view
   const next = result?.next
   return <>
-    {failed ? <p role="alert">Could not load updates. <button className="secondary-button" onClick={() => {
+    {failed ? <p className="updates-status" role="alert">Could not load updates. <button className="secondary-button" onClick={() => {
       setView({}); setRevision(value => value + 1)
-    }}>Retry</button></p> : !result ? <p role="status">Loading updates…</p> : result.items.length ? (
-      <ul className="report-list">{result.items.map(update => <li key={update.id} className="ban-row update-row">
+    }}>Retry</button></p> : !result ? <p className="updates-status" role="status">Loading updates…</p> : result.items.length ? (
+      <ul className="report-list">{result.items.map(update => <li key={update.id} className="update-row">
         <IncidentPhoto client={client} photo={update.photo_path ? { path: update.photo_path } : undefined}
           label={update.person_label} compact />
-        <div className="ban-copy">
-          <div className="ban-row-heading"><h3>{update.person_label}</h3><span className="badge decision-status ban-lifted">Ban lifted</span></div>
-          <p>Lifted <time dateTime={update.occurred_at}>{formatDate(update.occurred_at)}</time> · <span>{update.read_at ? 'Read' : 'Unread'}</span></p>
-          <p className="service-instruction"><strong>Service note at time of lifting</strong><br />{update.service_note}</p>
-          {!update.read_at && <button className="secondary-button" disabled={saving !== null}
-            onClick={() => { void onRead(update.id) }}>{saving === update.id ? 'Saving…' : 'Mark as read'}</button>}
+        <div className="update-copy">
+          <div className="update-title"><h3>{update.person_label}</h3><span className="badge decision-status ban-lifted">Ban lifted</span></div>
+          <div className="update-meta">
+            <span>Lifted <time dateTime={update.occurred_at}>{formatDate(update.occurred_at)}</time></span>
+            <span className={update.read_at ? undefined : 'update-unread'}>{update.read_at ? 'Read' : 'Unread'}</span>
+            {!update.read_at && <button className="update-read-button" disabled={saving !== null}
+              onClick={() => { void onRead(update.id) }}>{saving === update.id ? 'Saving…' : 'Mark as read'}</button>}
+          </div>
+          <div className="update-note">
+            <h4>Service note at time of lifting</h4>
+            <p>{update.service_note}</p>
+          </div>
         </div>
       </li>)}</ul>
-    ) : <p className="empty">{cursors.length ? 'No more updates on this page.' : query ? 'No matching updates.' : 'No lift updates yet.'}</p>}
-    {!recent && (cursors.length > 0 || next) && <div className="ban-directory-footer">
+    ) : <p className="updates-status">{cursors.length ? 'No more updates on this page.' : query ? 'No matching updates.' : 'No lift updates yet.'}</p>}
+    {!recent && (cursors.length > 0 || next) && <div className="updates-footer updates-pagination">
       <button className="secondary-button" disabled={!cursors.length || saving !== null} onClick={() => {
         setView({}); setCursors(previous => previous.slice(0, -1))
       }}>Previous</button>

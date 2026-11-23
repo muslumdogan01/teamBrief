@@ -158,7 +158,10 @@ function Workspace({ client, member, environment }: { client: SupabaseClient; me
   const titles: Record<Page, string> = { home: 'Home', create: 'Report Incident', mine: 'My Incidents', active: 'Active Decisions', updates: 'Updates', review: 'Management', history: 'Decision history' }
   const directoryPage = page === 'home' || page === 'active'
   const banProps = { client, venueId: member.venueId, now, refreshVersion }
-  function navigate(p: Page) { setPage(p); setSelected(null); setNotice('') }
+  function navigate(p: Page) {
+    setPage(p); setSelected(null); setNotice('')
+    if (p === 'updates') window.scrollTo(0, 0)
+  }
   function viewAll(query: string) { setActiveQuery(query); navigate('active') }
   function openBan(id: string) { if (page === 'home') viewAll(homeQuery.trim()); setSelected(id) }
   function decisionView(d: ServerDecision) {
@@ -176,7 +179,7 @@ function Workspace({ client, member, environment }: { client: SupabaseClient; me
       </button>
     </li>)}</ul> : <p className="empty">No incidents to show.</p>
   }
-  return <div className="app-shell"><aside className="sidebar"><a className="brand" href="#" onClick={e => { e.preventDefault(); navigate('home') }}>TeamBrief</a><p>{member.venueName}</p><nav aria-label="Main navigation">{(Object.keys(titles) as Page[]).filter(p => manager || !['review', 'history'].includes(p)).map(p => <button key={p} className={page === p ? 'nav-item active' : 'nav-item'} onClick={() => navigate(p)}>{titles[p]}</button>)}</nav><div className="profile">{member.name} · {manager ? 'Manager' : 'Staff'}</div></aside><div className="workspace"><main className="connected-workspace">
+  return <div className="app-shell connected-shell"><aside className="sidebar"><a className="brand" href="#" onClick={e => { e.preventDefault(); navigate('home') }}>TeamBrief</a><p>{member.venueName}</p><nav aria-label="Main navigation">{(Object.keys(titles) as Page[]).filter(p => manager || !['review', 'history'].includes(p)).map(p => <button key={p} className={page === p ? 'nav-item active' : 'nav-item'} onClick={() => navigate(p)}>{titles[p]}</button>)}</nav><div className="profile">{member.name} · {manager ? 'Manager' : 'Staff'}</div></aside><div className="workspace"><main className="connected-workspace">
     <header className="connected-heading">
       <div><h1 id={page === 'active' ? 'active-decisions' : undefined}>{titles[page]}</h1><p className="connected-context">{member.venueName}<span>{environment}</span></p></div>
       <div className="connected-actions">
@@ -198,7 +201,7 @@ function Workspace({ client, member, environment }: { client: SupabaseClient; me
       onQuery={page === 'home' ? setHomeQuery : setActiveQuery} onOpen={openBan} onAll={viewAll} />)}
     {(directoryPage || page === 'updates') && allowed && <Updates key={`updates-${page}`} client={client}
       venueId={member.venueId} refreshVersion={refreshVersion} recent={directoryPage}
-      onAll={() => navigate('updates')} onActive={() => viewAll('')} />}
+      onAll={() => navigate('updates')} onActive={() => { viewAll(''); window.scrollTo(0, 0) }} />}
     {error && <p className="error-banner" role="alert">{error}</p>}
     {loading ? (!directoryPage && page !== 'updates' && <p role="status">Loading team records…</p>) : (error && page !== 'create') || !allowed
       ? (!directoryPage && page !== 'updates' && <p>Records are unavailable. Refresh to try again.</p>) : <>
