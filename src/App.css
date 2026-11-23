@@ -84,7 +84,7 @@ footer { margin: 0 40px; padding: 24px 0; border-top: 1px solid #dce2d8; font-si
 .detail-heading .pending { flex-shrink: 0; }
 @media (max-width: 1050px) { .stats { gap: 12px; }.stats > div { padding: 18px 14px; } }
 @media (max-width: 700px) {
-  nav { grid-template-columns: repeat(var(--nav-count, 4), minmax(0, 1fr)); }
+  nav { grid-template-columns: repeat(4, minmax(0, 1fr)); }
   .nav-item { font-size: 10px; overflow-wrap: anywhere; line-height: 1.5; }
   .profile-picker { width: 100%; }
   .topbar { gap: 12px; }
@@ -105,13 +105,10 @@ button:disabled { cursor: wait; opacity: .65; }
   margin-top: 1.5rem;
 }
 
-.recent-updates li {
-  padding-block: 1rem;
-}
-
-.recent-updates li + li {
-  border-top: 1px solid currentColor;
-}
+.recent-updates .update-row { padding-block: 1rem; }
+.recent-updates .update-row h3 { margin: 0; }
+.recent-updates .text-button { display: inline-flex; align-items: center; }
+.recent-updates > .secondary-button { margin-top: .75rem; }
 
 .recent-updates .service-instruction {
   white-space: pre-wrap;

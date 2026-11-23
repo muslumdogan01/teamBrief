@@ -5,10 +5,9 @@ export type Membership = { venueId: string; venueName: string; userId: string; r
 export type Incident = { id: string; label: string; occurredAt: string; createdAt: string; incidentType: IncidentType; severity: Severity; appearance: string; description: string; reportedBy: string; decision: ServerDecision | null; photo?: IncidentPhotoRef }
 export type ServerDecision = { id: string; reportId: string; kind: 'ban' | 'no-ban'; explanation: string; severity: Severity | null; instruction: string | null; reviewAt: string | null; decidedBy: string; decidedAt: string; liftedAt: string | null; liftedBy: string | null; liftReason: string | null }
 export type History = { id: string; decisionId: string; event: string; actorId: string; at: string; reason: string }
-export type VenueUpdate = { id: string; eventType: 'ban_lifted'; personLabel: string; serviceNote: string; occurredAt: string; readAt: string | null }
 export type IncidentPhotoRef = { reportId: string; path: string }
-export type Data = { incidents: Incident[]; decisions: ServerDecision[]; history: History[]; updates: VenueUpdate[] }
-export const emptyData = (): Data => ({ incidents: [], decisions: [], history: [], updates: [] })
+export type Data = { incidents: Incident[]; decisions: ServerDecision[]; history: History[] }
+export const emptyData = (): Data => ({ incidents: [], decisions: [], history: [] })
 type Row = Record<string, any>
 function relatedRow(value: Row | Row[] | null | undefined) {
   return (Array.isArray(value) ? value[0] : value) ?? null
@@ -60,18 +59,16 @@ export async function loadData(client: SupabaseClient, member: Membership): Prom
   const staff = member.role !== 'manager'
   // Embed the matching decision in each visible report. The general decision
   // list is independent and its page boundary cannot change an incident's status.
-  const [incidents, decisions, updates, history] = await Promise.all([
+  const [incidents, decisions, history] = await Promise.all([
     loadVenueRows(client, venueId, 'incident_reports',
       '*,decision:decisions!decisions_venue_id_report_id_fkey(*),photo:incident_photos(object_path)',
       'created_at', { author: staff ? member.userId : undefined }),
     loadVenueRows(client, venueId, 'decisions', '*', 'decided_at', { singleBatch: staff }),
-    client.rpc('get_recent_updates', { p_venue_id: venueId }).then(r => (checked(r) ?? []) as Row[]),
     loadVenueRows(client, venueId, 'decision_history', '*', 'occurred_at'),
   ])
   return {
     incidents: incidents.map(mapIncident),
     decisions: decisions.map(mapDecision),
-    updates: updates.map(r => ({ id: r.id, eventType: r.event_type, personLabel: r.person_label, serviceNote: r.service_note, occurredAt: r.occurred_at, readAt: r.read_at })),
     history: history.reverse().map(r => ({ id: r.id, decisionId: r.decision_id, event: r.event_type, actorId: r.actor_id, at: r.occurred_at, reason: r.reason })),
   }
 }
@@ -110,4 +107,24 @@ export async function findActiveBans(
   }).abortSignal(signal)) as (ActiveBan & { has_more: boolean })[] | null
   const last = rows?.at(-1)
   return { items: rows ?? [], next: last?.has_more ? { decided_at: last.decided_at, decision_id: last.decision_id } : undefined }
+}
+
+export type UpdateCursor = { occurred_at: string; id: string }
+type LiftUpdate = UpdateCursor & {
+  person_label: string; service_note: string; read_at: string | null; photo_path: string | null
+}
+
+export async function findLiftUpdates(
+  client: SupabaseClient, venueId: string, query: string, limit: number, signal: AbortSignal, cursor?: UpdateCursor,
+) {
+  const rows = checked(await client.rpc('find_lift_updates', {
+    p_venue_id: venueId, p_query: query, p_limit: limit,
+    p_before_at: cursor?.occurred_at ?? null, p_before_id: cursor?.id ?? null,
+  }).abortSignal(signal)) as (LiftUpdate & { has_more: boolean })[] | null
+  const last = rows?.at(-1)
+  return { items: rows ?? [], next: last?.has_more ? { occurred_at: last.occurred_at, id: last.id } : undefined }
+}
+
+export async function countUnreadLiftUpdates(client: SupabaseClient, venueId: string, signal: AbortSignal) {
+  return checked(await client.rpc('count_unread_lift_updates', { p_venue_id: venueId }).abortSignal(signal)) as number
 }

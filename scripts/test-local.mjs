@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { accounts, localClient, localSettings, localTestPassword, venueId } from './local-tools.mjs'
-import { createIncident, createDecision, findActiveBans, liftDecision, loadData, markUpdateRead, memberships } from '../src/backend.ts'
+import { createIncident, countUnreadLiftUpdates, createDecision, findLiftUpdates, findActiveBans, liftDecision, loadData, markUpdateRead, memberships } from '../src/backend.ts'
 import { decisionStatus } from '../src/decision-status.ts'
 async function main() {
   const password = localTestPassword()
@@ -61,25 +61,33 @@ async function main() {
     assert.deepEqual(Object.keys(events[0]).sort(), ['decision_id', 'event_type', 'id', 'occurred_at', 'person_label', 'service_note', 'venue_id'])
     assert.equal(await ownStatus(id), 'ban-lifted')
     const after = await loadData(staff2, member2)
-    const update = after.updates.find(u => u.id === updateId)
+    const loadUpdate = async client => (await findLiftUpdates(client, venueId,
+      'Fictional HTTP test guest', 20, new AbortController().signal)).items.find(u => u.id === updateId)
+    const { has_more, ...update } = await loadUpdate(staff2)
+    assert.equal(typeof has_more, 'boolean')
     assert.deepEqual(update, {
-      id: updateId, eventType: 'ban_lifted', personLabel: 'Fictional HTTP test guest',
-      serviceNote: 'Resume normal service for this fictional guest.',
-      occurredAt: events[0].occurred_at, readAt: null,
+      id: updateId, person_label: 'Fictional HTTP test guest',
+      service_note: 'Resume normal service for this fictional guest.',
+      occurred_at: events[0].occurred_at, read_at: null, photo_path: null,
     })
-    assert.equal((await loadData(manager, memberBoss)).updates.find(u => u.id === updateId).readAt, null)
+    assert.equal((await loadUpdate(manager)).read_at, null)
     await assert.rejects(() => markUpdateRead(staff2, foreignVenue, updateId))
     assert.deepEqual((await staff2.rpc('get_recent_updates', { p_venue_id: foreignVenue })).data, [])
     assert.ok((await staff2.from('venue_updates').insert({ venue_id: venueId })).error)
     assert.ok((await staff2.from('venue_update_reads').insert({ update_id: updateId, user_id: user1 })).error)
+    const unreadCount = client => countUnreadLiftUpdates(client, venueId, new AbortController().signal)
+    const beforeRead = await unreadCount(staff2)
+    const ownerCount = await unreadCount(staff1)
     await markUpdateRead(staff2, venueId, updateId)
-    const readAt = (await loadData(staff2, member2)).updates.find(u => u.id === updateId).readAt
+    assert.equal(await unreadCount(staff2), beforeRead - 1)
+    assert.equal(await unreadCount(staff1), ownerCount)
+    const readAt = (await loadUpdate(staff2)).read_at
     assert.ok(readAt)
     await markUpdateRead(staff2, venueId, updateId)
     assert.equal((await staff2.auth.signOut({ scope: 'local' })).error, null)
     assert.equal((await staff2.auth.signInWithPassword({ email: accounts[1].email, password })).error, null)
-    assert.equal((await loadData(staff2, member2)).updates.find(u => u.id === updateId).readAt, readAt)
-    assert.equal((await loadData(staff1, member1)).updates.find(u => u.id === updateId).readAt, null)
+    assert.equal((await loadUpdate(staff2)).read_at, readAt)
+    assert.equal((await loadUpdate(staff1)).read_at, null)
     assert.deepEqual((await staff1.from('venue_update_reads').select('*').eq('update_id', updateId)).data, [])
     assert.ok(!after.decisions.some(d => d.id === decisionId), 'lifted decision disappears for other staff')
     assert.ok(!(await findBans('imaginary GREEN hat')).items.some(s => s.decision_id === decisionId), 'lifted ban disappears from search')

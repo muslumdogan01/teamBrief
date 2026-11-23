@@ -80,3 +80,7 @@ DOM tests verify login errors, logout, no-membership denial, account switching a
 ## Incident photo storage
 
 Apply pending migrations with `npx --no-install supabase migration up --local` and keep `storage-api` enabled. The photo migrations create a private bucket, a protected upload reservation and a per-report attachment. The download policy applies the same attachment access rules to both the authenticated download and the object-info check used by hosted Storage. After applying the migrations, run the existing `access.sql` command above and `npm run test:local:photos`. Use `npm run cleanup:local:photos` to clear abandoned and expired staged data through the Storage API. See the root README for workflow and cleanup details.
+
+## Lift update history
+
+The history RPC returns the selected pub’s lift updates, service notes, photo paths and the caller’s read receipts. Search uses the existing person label and short physical description. The unread total counts the full pub history for the signed-in account. A private photo remains available to active members of that pub when an existing lift update links to its incident. The same access check applies to downloads and object info. Incident details, private lift reasons, bucket listing and signed URL permissions retain their existing access rules.

@@ -208,12 +208,71 @@ select pg_temp.denied($q$select * from public.find_active_bans('20000000-0000-00
 select pg_temp.denied($q$select * from public.get_teambrief_totals('20000000-0000-0000-0000-000000000001')$q$);
 select set_config('request.jwt.claim.sub', '10000000-0000-0000-0000-000000000004', true);
 
+-- Keep the original update older than a tied batch so it is searchable beyond page one.
+reset role;
+update public.venue_updates set occurred_at = now() - interval '1 day' where id = :'a_update';
+set local role authenticated;
+select set_config('request.jwt.claim.sub', '10000000-0000-0000-0000-000000000002', true);
+do $$
+declare
+  venue uuid := '20000000-0000-0000-0000-000000000001';
+  ban uuid;
+begin
+  for ban in
+    select d.id from public.decisions d
+    join public.incident_reports r on r.id = d.report_id
+    where d.venue_id = venue and r.label like 'Directory guest %'
+  loop
+    perform public.lift_service_ban(venue, ban, 'Private fixture reason', 'Historical service note');
+  end loop;
+end;
+$$;
+select set_config('request.jwt.claim.sub', '10000000-0000-0000-0000-000000000004', true);
+select pg_temp.assert_true((select count(*) = 5 and bool_and(has_more) and bool_and(id <> :'a_update')
+  from public.find_lift_updates('20000000-0000-0000-0000-000000000001', '', 5)), 'recent updates contain the five newest records');
+with first_page as (
+  select * from public.find_lift_updates('20000000-0000-0000-0000-000000000001')
+), boundary as (
+  select occurred_at, id from first_page order by occurred_at, id limit 1
+), second_page as (
+  select u.* from boundary b cross join lateral public.find_lift_updates(
+    '20000000-0000-0000-0000-000000000001', '', 20, b.occurred_at, b.id) u
+), combined as (
+  select * from first_page union all select * from second_page
+)
+select pg_temp.assert_true(
+  (select count(*) = 20 and bool_and(has_more) and bool_and(id <> :'a_update') from first_page)
+  and (select count(*) = 4 and not bool_or(has_more) and bool_or(id = :'a_update') from second_page)
+  and (select count(distinct id) = 24 from combined),
+  'updates paginate across timestamp ties without omissions or duplicates');
+select pg_temp.assert_true((select count(*) = 1 and bool_and(id = :'a_update' and read_at is not null and photo_path is null)
+  from public.find_lift_updates('20000000-0000-0000-0000-000000000001', 'a guest')), 'older update is searchable and retains its receipt');
+select pg_temp.assert_true((select count(*) = 1 and bool_and(id = :'a_update')
+  from public.find_lift_updates('20000000-0000-0000-0000-000000000001', '  A APPEARANCE  ')),
+  'physical description search finds an update beyond the first page');
+select pg_temp.assert_true(not exists(select 1
+  from public.find_lift_updates('20000000-0000-0000-0000-000000000001', 'unlikely search phrase')),
+  'unmatched search does not return the unfiltered feed');
+select pg_temp.assert_true((select count(*) = 20 and bool_and(has_more)
+  from public.find_lift_updates('20000000-0000-0000-0000-000000000001', '  IMAGINARY BLUE jacket  ')), 'search uses physical description across pages');
+select pg_temp.assert_true(not exists (select 1
+  from public.find_lift_updates('20000000-0000-0000-0000-000000000001', 'Private fixture reason')), 'search excludes private lift reasons');
+select pg_temp.assert_true(public.count_unread_lift_updates('20000000-0000-0000-0000-000000000001') = 23,
+  'unread count covers the full pub and honors an existing receipt');
+select set_config('request.jwt.claim.sub', '10000000-0000-0000-0000-000000000001', true);
+select pg_temp.assert_true(public.count_unread_lift_updates('20000000-0000-0000-0000-000000000001') = 24,
+  'another account retains an independent unread count');
+select set_config('request.jwt.claim.sub', '10000000-0000-0000-0000-000000000003', true);
+select pg_temp.denied($q$select * from public.find_lift_updates('20000000-0000-0000-0000-000000000001')$q$);
+select set_config('request.jwt.claim.sub', '10000000-0000-0000-0000-000000000004', true);
+
 reset role;
 update public.venue_memberships set is_active = false where user_id = '10000000-0000-0000-0000-000000000004';
 set local role authenticated;
 select pg_temp.assert_true(not exists(select 1 from public.decisions where id = :'overdue_decision'), 'inactive other staff cannot see still-active ban');
 select pg_temp.denied($q$select * from public.find_active_bans('20000000-0000-0000-0000-000000000001')$q$);
 select pg_temp.denied($q$select * from public.get_teambrief_totals('20000000-0000-0000-0000-000000000001')$q$);
+select pg_temp.denied($q$select * from public.find_lift_updates('20000000-0000-0000-0000-000000000001')$q$);
 select pg_temp.assert_true(not exists(select 1 from public.venue_updates where id = :'a_update'), 'inactive user loses update access');
 select pg_temp.assert_true(not exists(select 1 from public.venue_update_reads where update_id = :'a_update'), 'inactive user loses receipt access');
 select pg_temp.denied(format('select public.mark_venue_update_read(%L, %L)', '20000000-0000-0000-0000-000000000001', :'a_update'));
@@ -265,6 +324,7 @@ select pg_temp.denied('select * from public.venue_update_reads');
 select pg_temp.denied('select * from public.incident_photos');
 select pg_temp.denied(format('select * from public.prepare_incident_photo(%L,%L,%L)',
   '20000000-0000-0000-0000-000000000001', :'photo_report', :'photo_upload'));
+select pg_temp.denied($q$select * from public.find_lift_updates('20000000-0000-0000-0000-000000000001')$q$);
 select pg_temp.denied(format('select public.get_recent_updates(%L)', '20000000-0000-0000-0000-000000000001'));
 select pg_temp.denied(format('select public.mark_venue_update_read(%L, %L)', '20000000-0000-0000-0000-000000000001', :'a_update'));
 select pg_temp.denied($q$select public.create_incident_report('20000000-0000-0000-0000-000000000001', 'x', now(), 'other', 'low', 'x', 'x')$q$);

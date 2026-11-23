@@ -2,11 +2,12 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
 import { createClient } from '@supabase/supabase-js'
 import type { SupabaseClient, User } from '@supabase/supabase-js'
-import { checked, createDecision, emptyData, liftDecision, loadData, loadTeamTotals, markUpdateRead, memberships } from './backend.ts'
-import type { Data, Incident, Membership, ServerDecision, TeamTotals, VenueUpdate } from './backend.ts'
+import { checked, createDecision, emptyData, liftDecision, loadData, loadTeamTotals, memberships } from './backend.ts'
+import type { Data, Incident, Membership, ServerDecision, TeamTotals } from './backend.ts'
 import { discardIncidentPhoto, submitIncident } from './incident-photo-backend.ts'
 import type { PhotoSubmission } from './incident-photo-backend.ts'
 import { ActiveBanDetail, ActiveBanDirectory } from './ActiveBanDirectory.tsx'
+import { Updates } from './Updates.tsx'
 import { IncidentPhoto } from './IncidentPhoto.tsx'
 import { requestScope, runMutation } from './session-state.ts'
 import { DecisionForm, LiftForm, ReportForm } from './App.tsx'
@@ -89,7 +90,7 @@ function Account({ client, user, logout, environment }: { client: SupabaseClient
   const member = members?.find(m => m.venueId === venue)
   return <><header className={member ? "topbar account-topbar" : "topbar"}><strong>TeamBrief · {user.email}</strong><button className="secondary-button" onClick={logout}>Sign out</button></header>{error ? <main><p role="alert" className="error-banner">{error}</p><button onClick={() => { setMembers(null); setError(''); setAttempt(n => n + 1) }}>Retry</button></main> : !members ? <main role="status">Loading pub membership…</main> : !member ? <main><h1>Access not granted</h1><p>Your account has no active pub membership. Ask your pub administrator to assign access.</p></main> : <>{members.length > 1 && <label className="pub-picker">Pub <select value={venue} onChange={e => setVenue(e.target.value)}>{members.map(m => <option key={m.venueId} value={m.venueId}>{m.venueName}</option>)}</select></label>}<Workspace key={member.venueId} client={client} member={member} environment={environment} /></>}</>
 }
-type Page = 'home' | 'create' | 'mine' | 'active' | 'review' | 'history'
+type Page = 'home' | 'create' | 'mine' | 'active' | 'updates' | 'review' | 'history'
 function Workspace({ client, member, environment }: { client: SupabaseClient; member: Membership; environment: string }) {
   const [data, setData] = useState<Data>(emptyData)
   const [loading, setLoading] = useState(true)
@@ -154,7 +155,7 @@ function Workspace({ client, member, environment }: { client: SupabaseClient; me
   const pending = data.incidents.filter(r => !r.decision)
   const incident = selected ? incidentsById.get(selected) : undefined
   const historyDecision = page === 'history' ? data.decisions.find(d => d.id === selected) : undefined
-  const titles: Record<Page, string> = { home: 'Home', create: 'Report Incident', mine: 'My Incidents', active: 'Active Decisions', review: 'Management', history: 'Decision history' }
+  const titles: Record<Page, string> = { home: 'Home', create: 'Report Incident', mine: 'My Incidents', active: 'Active Decisions', updates: 'Updates', review: 'Management', history: 'Decision history' }
   const directoryPage = page === 'home' || page === 'active'
   const banProps = { client, venueId: member.venueId, now, refreshVersion }
   function navigate(p: Page) { setPage(p); setSelected(null); setNotice('') }
@@ -175,9 +176,9 @@ function Workspace({ client, member, environment }: { client: SupabaseClient; me
       </button>
     </li>)}</ul> : <p className="empty">No incidents to show.</p>
   }
-  return <div className="app-shell"><aside className="sidebar"><a className="brand" href="#" onClick={e => { e.preventDefault(); navigate('home') }}>TeamBrief</a><p>{member.venueName}</p><nav aria-label="Main navigation" style={{ '--nav-count': manager ? 6 : 4 } as React.CSSProperties}>{(Object.keys(titles) as Page[]).filter(p => manager || !['review', 'history'].includes(p)).map(p => <button key={p} className={page === p ? 'nav-item active' : 'nav-item'} onClick={() => navigate(p)}>{titles[p]}</button>)}</nav><div className="profile">{member.name} · {manager ? 'Manager' : 'Staff'}</div></aside><div className="workspace"><main className="connected-workspace">
+  return <div className="app-shell"><aside className="sidebar"><a className="brand" href="#" onClick={e => { e.preventDefault(); navigate('home') }}>TeamBrief</a><p>{member.venueName}</p><nav aria-label="Main navigation">{(Object.keys(titles) as Page[]).filter(p => manager || !['review', 'history'].includes(p)).map(p => <button key={p} className={page === p ? 'nav-item active' : 'nav-item'} onClick={() => navigate(p)}>{titles[p]}</button>)}</nav><div className="profile">{member.name} · {manager ? 'Manager' : 'Staff'}</div></aside><div className="workspace"><main className="connected-workspace">
     <header className="connected-heading">
-      <div><h1>{titles[page]}</h1><p className="connected-context">{member.venueName}<span>{environment}</span></p></div>
+      <div><h1 id={page === 'active' ? 'active-decisions' : undefined}>{titles[page]}</h1><p className="connected-context">{member.venueName}<span>{environment}</span></p></div>
       <div className="connected-actions">
         <button className="secondary-button" onClick={() => { void refresh().catch(() => {}) }}>Refresh</button>
         {page === 'home' && <button className="primary" onClick={() => navigate('create')}>Report incident</button>}
@@ -195,17 +196,14 @@ function Workspace({ client, member, environment }: { client: SupabaseClient; me
         mutate(() => liftDecision(client, member.venueId, id, reason, note), 'active') : undefined} />
     </> : <ActiveBanDirectory key={page} {...banProps} home={page === 'home'} query={page === 'home' ? homeQuery : activeQuery}
       onQuery={page === 'home' ? setHomeQuery : setActiveQuery} onOpen={openBan} onAll={viewAll} />)}
+    {(directoryPage || page === 'updates') && allowed && <Updates key={`updates-${page}`} client={client}
+      venueId={member.venueId} refreshVersion={refreshVersion} recent={directoryPage}
+      onAll={() => navigate('updates')} onActive={() => viewAll('')} />}
     {error && <p className="error-banner" role="alert">{error}</p>}
-    {loading ? (!directoryPage && <p role="status">Loading team records…</p>) : (error && page !== 'create') || !allowed
-      ? (!directoryPage && <p>Records are unavailable. Refresh to try again.</p>) : <>
+    {loading ? (!directoryPage && page !== 'updates' && <p role="status">Loading team records…</p>) : (error && page !== 'create') || !allowed
+      ? (!directoryPage && page !== 'updates' && <p>Records are unavailable. Refresh to try again.</p>) : <>
     {page === 'create' && <ConnectedReportForm client={client} member={member} save={write => mutate(write, 'mine', true)} />}
     {(page === 'mine' || page === 'review') && (incident ? <><button onClick={() => setSelected(null)}>← Back</button><FullIncident incident={incident}>{incidentPhoto(incident)}</FullIncident>{incident.decision ? decisionView(incident.decision) : page === 'review' && manager ? <DecisionForm actor={member.name} key={incident.id} onSave={draft => mutate(() => createDecision(client, member.venueId, incident.id, draft), 'review')} /> : <p>Awaiting review.</p>}</> : list(page === 'mine' ? mine : pending, page === 'mine'))}
-    {(page === 'home' || page === 'active') && <RecentUpdates updates={data.updates} onRead={async id => {
-      const ticket = lifetime.ticket()
-      await runMutation(() => markUpdateRead(client, member.venueId, id), async () => {
-        if (lifetime.current(ticket)) await refresh()
-      })
-    }} />}
     {page === 'history' && manager && (historyDecision ? <>
       <button onClick={() => setSelected(null)}>← Back</button>
       {(() => {
@@ -278,28 +276,4 @@ function ConnectedReportForm({ client, member, save }: {
 
 function FullIncident({ incident: r, children }: { incident: Incident; children: React.ReactNode }) {
   return <section className="panel detail"><h2>{r.label}</h2>{children}<dl><div><dt>Reported by account</dt><dd>{r.reportedBy}</dd></div><div><dt>Incident time</dt><dd>{formatDate(r.occurredAt)}</dd></div><div><dt>Incident type</dt><dd>{incidentLabels[r.incidentType]}</dd></div><div><dt>Suggested severity</dt><dd>{severityLabels[r.severity]}</dd></div><div className="wide"><dt>Identifying description</dt><dd>{r.appearance}</dd></div><div className="wide"><dt>Incident description</dt><dd>{r.description}</dd></div></dl></section>
-}
-
-function RecentUpdates({ updates, onRead }: { updates: VenueUpdate[]; onRead: (id: string) => Promise<void> }) {
-  const [saving, setSaving] = useState<string | null>(null)
-  const [error, setError] = useState('')
-  async function markRead(id: string) {
-    setSaving(id)
-    setError('')
-    try { await onRead(id) }
-    catch (e) { setError(message(e)) }
-    finally { setSaving(null) }
-  }
-  return <section className="panel detail recent-updates" aria-labelledby="recent-updates-heading">
-    <h2 id="recent-updates-heading">Recent Updates</h2>
-    {error && <p className="error-banner" role="alert">{error}</p>}
-    {updates.length ? <ul className="report-list">{updates.map(update => <li key={update.id}>
-      <h3>Service ban lifted · {update.personLabel}</h3>
-      <p><time dateTime={update.occurredAt}>{formatDate(update.occurredAt)}</time> · <span>{update.readAt ? 'Read' : 'Unread'}</span></p>
-      <p className="service-instruction">{update.serviceNote}</p>
-      {!update.readAt && <button className="secondary-button" type="button" disabled={saving !== null} onClick={() => { void markRead(update.id) }}>
-        {saving === update.id ? 'Saving…' : 'Mark as read'}
-      </button>}
-    </li>)}</ul> : <p className="empty">No recent updates.</p>}
-  </section>
 }

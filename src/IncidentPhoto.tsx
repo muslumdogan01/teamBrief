@@ -7,7 +7,7 @@ import { photoBucket, validateIncidentPhoto } from './incident-photo-files.ts'
 import { useObjectUrl } from './use-object-url.ts'
 
 export function IncidentPhoto({ client, photo, label, compact = false }: {
-  client: SupabaseClient; photo?: IncidentPhotoRef; label: string; compact?: boolean
+  client: SupabaseClient; photo?: Pick<IncidentPhotoRef, 'path'>; label: string; compact?: boolean
 }) {
   const slot = useRef<HTMLDivElement>(null)
   const dialog = useRef<HTMLDialogElement>(null)

@@ -20,6 +20,19 @@ test('sign-in errors, sign-out, account switching and delayed old data are handl
   const searchRequests = []
   const unassignedQueries = []
   const readBy = new Set()
+  let manyUpdates = false
+  let finishOldUpdateSearch
+  let oldUpdateSignal
+  const historicalUpdate = {
+    id: 'update', person_label: 'Test guest', service_note: 'Resume normal service.',
+    occurred_at: '2020-01-01', photo_path: null,
+  }
+  const olderUpdates = Array.from({ length: 20 }, (_, i) => ({
+    ...historicalUpdate, id: `update-${i + 1}`, person_label: `History guest ${i + 1}`,
+    photo_path: i === 0 ? 'missing-image' : i === 1 ? 'test-image' : null,
+  }))
+  const pngHeader = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10])
+  const photoFile = new Blob([pngHeader], { type: 'image/png' })
   const statusReports = ['Awaiting guest', 'Overdue guest', 'Lifted guest', 'Reviewed guest'].map((label, index) => {
     const id = `report-${index}`
     const initialBan = {
@@ -32,6 +45,11 @@ test('sign-in errors, sign-out, account switching and delayed old data are handl
       incident_type: 'other', severity: 'low', appearance: 'Fictional hat', description: 'Fictional report', decision, photo: [] }
   })
   const client = {
+    storage: { from: () => ({
+      download: async path => path === 'test-image'
+        ? { data: photoFile, error: null }
+        : { data: null, error: { message: 'Object not found' } },
+    }) },
     auth: {
       onAuthStateChange(fn) { listener=fn; return {data:{subscription:{unsubscribe(){}}}} },
       async getSession() { return {data:{session:null},error:null} },
@@ -69,15 +87,30 @@ test('sign-in errors, sign-out, account switching and delayed old data are handl
           return Promise.resolve({ data, error: null })
         } }
       }
+      if (name === 'find_lift_updates') {
+        return { abortSignal: signal => {
+          if (args.p_query === 'old update search') {
+            oldUpdateSignal = signal
+            return new Promise(resolve => { finishOldUpdateSearch = resolve })
+          }
+          if (args.p_query === 'offline') return Promise.resolve({ data: null, error: { message: 'Offline' } })
+          const all = manyUpdates ? [historicalUpdate, ...olderUpdates] : [historicalUpdate]
+          const filtered = args.p_query === 'dotted scarf' ? [olderUpdates[19]] : args.p_query ? [] : all
+          const start = args.p_before_id ? filtered.findIndex(row => row.id === args.p_before_id) + 1 : 0
+          const data = filtered.slice(start, start + args.p_limit).map(row => ({
+            ...row, has_more: filtered.length > start + args.p_limit,
+            read_at: row.id === 'update' && readBy.has(identity) ? '2020-01-02' : null,
+          }))
+          return Promise.resolve({ data, error: null })
+        } }
+      }
+      if (name === 'count_unread_lift_updates') {
+        return { abortSignal: async () => ({ data: (manyUpdates ? 21 : 1) - Number(readBy.has(identity)), error: null }) }
+      }
       return updatesRpc(name, args)
     },
   }
   async function updatesRpc(name, args) {
-      if (name === 'get_recent_updates') {
-        return { data: [{ id: 'update', event_type: 'ban_lifted', person_label: 'Test guest',
-          service_note: 'Resume normal service.', occurred_at: '2020-01-01',
-          read_at: readBy.has(identity) ? '2020-01-02' : null }], error: null }
-      }
       if (name === 'mark_venue_update_read') {
         assert.deepEqual(args, { p_venue_id: 'pub', p_update_id: 'update' })
         readBy.add(identity)
@@ -98,7 +131,7 @@ test('sign-in errors, sign-out, account switching and delayed old data are handl
     fireEvent.click(ui.getByRole('button',{name:'Sign in'}))
     await waitFor(()=>assert.ok(ui.queryByRole('button',{name:'My Incidents'})))
     await waitFor(() => assert.ok(ui.getByRole('heading', { name: 'Recent Updates' })))
-    assert.ok(ui.getByText('Resume normal service.'))
+    await ui.findByText('Resume normal service.')
     assert.ok(ui.getByRole('button', { name: 'Active Decisions 37' }))
     assert.equal(ui.queryByRole('button', { name: /Awaiting review/ }), null)
     const search = () => ui.getByRole('searchbox', { name: 'Search by person label or physical description' })
@@ -123,6 +156,47 @@ test('sign-in errors, sign-out, account switching and delayed old data are handl
     fireEvent.click(ui.getByRole('button', { name: 'Active Decisions' }))
     assert.ok(ui.getByRole('heading', { name: 'Recent Updates' }))
     assert.equal(ui.queryByRole('button', { name: 'Mark as read' }), null)
+    manyUpdates = true
+    fireEvent.click(within(ui.getByRole('navigation')).getByRole('button', { name: 'Home' }))
+    const recent = within(ui.getByRole('region', { name: 'Recent Updates' }))
+    await recent.findByText('Unread in this pub: 20')
+    await waitFor(() => assert.equal(recent.getAllByRole('listitem').length, 5))
+    assert.equal(recent.getAllByText('Ban lifted').length, 5)
+    assert.ok(recent.getByText('This is a past update. Check Active Decisions for current restrictions.'))
+    assert.ok(recent.getByRole('link', { name: 'Active Decisions' }))
+    await recent.findByText('Photo unavailable')
+    assert.ok(recent.getAllByText('No photo').length)
+    const photo = await recent.findByRole('button', { name: 'View incident photo for History guest 2' })
+    const [dialog] = photo.parentElement.getElementsByTagName('dialog')
+    dialog.showModal = () => { dialog.open = true }
+    const photoUrl = photo.querySelector('img').src
+    assert.equal((await fetch(photoUrl)).ok, true)
+    fireEvent.click(photo)
+    assert.ok(dialog.open)
+    fireEvent.click(recent.getByRole('button', { name: 'View all updates' }))
+    assert.ok(ui.getByRole('heading', { name: 'Updates', exact: true }))
+    assert.equal(dialog.isConnected, false)
+    await assert.rejects(() => fetch(photoUrl))
+    const history = within(ui.getByRole('region', { name: 'Lift history' }))
+    await waitFor(() => assert.equal(history.getAllByRole('listitem').length, 20))
+    fireEvent.click(history.getByRole('button', { name: 'Next' }))
+    await history.findByText('History guest 20')
+    assert.equal(history.getAllByRole('listitem').length, 1)
+    fireEvent.click(history.getByRole('button', { name: 'Previous' }))
+    await waitFor(() => assert.equal(history.getAllByRole('listitem').length, 20))
+    const historySearch = history.getByRole('searchbox')
+    fireEvent.change(historySearch, { target: { value: 'old update search' } })
+    await waitFor(() => assert.equal(typeof finishOldUpdateSearch, 'function'))
+    fireEvent.change(historySearch, { target: { value: 'dotted scarf' } })
+    await history.findByText('History guest 20')
+    await act(async () => finishOldUpdateSearch({ data: [{ ...historicalUpdate, person_label: 'Stale update' }], error: null }))
+    assert.equal(oldUpdateSignal.aborted, true)
+    assert.equal(history.queryByText('Stale update'), null)
+    fireEvent.change(historySearch, { target: { value: 'nothing' } })
+    await history.findByText('No matching updates.')
+    fireEvent.change(historySearch, { target: { value: 'offline' } })
+    await history.findByText('Could not load updates.')
+    manyUpdates = false
     fireEvent.click(ui.getByRole('button',{name:'My Incidents'}))
     await waitFor(()=>assert.ok(ui.queryByText('PRIVATE_one')))
     fireEvent.click(ui.getByRole('button',{name:'Sign out'}))

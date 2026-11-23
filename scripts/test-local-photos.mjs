@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
 import { execFileSync } from 'node:child_process'
 import { accounts, localClient, localSettings, localTestPassword, sql, venueId } from './local-tools.mjs'
-import { createDecision, liftDecision, loadData, memberships } from '../src/backend.ts'
+import { createDecision, findLiftUpdates, liftDecision, loadData, markUpdateRead, memberships } from '../src/backend.ts'
 import { discardIncidentPhoto, photoRequest, submitIncident } from '../src/incident-photo-backend.ts'
 import { photoBucket, photoMaxBytes, validateIncidentPhoto } from '../src/incident-photo-files.ts'
 
@@ -159,7 +159,28 @@ async function main() {
     await discardIncidentPhoto(owner, venueId, attempt.reportId, attempt.photo.uploadId)
     await allowed(owner, attempt.reportId, path)
     await liftDecision(manager, venueId, ban, 'Synthetic test completed', 'Resume normal service.')
-    await denied(staff2, attempt.reportId, path)
+    await allowed(staff2, attempt.reportId, path)
+    const readHistory = client => findLiftUpdates(client, venueId, draft.label, 5, new AbortController().signal)
+    const [update] = (await readHistory(staff2)).items
+    assert.equal(update.photo_path, path)
+    assert.equal(update.service_note, 'Resume normal service.')
+    assert.deepEqual(Object.keys(update).sort(), ['has_more', 'id', 'occurred_at', 'person_label', 'photo_path', 'read_at', 'service_note'])
+    assert.equal(update.read_at, null)
+    await markUpdateRead(staff2, venueId, update.id)
+    const [readUpdate] = (await readHistory(staff2)).items
+    assert.ok(readUpdate.read_at)
+    assert.equal(readUpdate.photo_path, path)
+    assert.equal((await readHistory(owner)).items[0].read_at, null)
+    await allowed(staff2, attempt.reportId, path)
+    assert.ok((await storage(staff2).createSignedUrl(path, 30)).error)
+    assert.deepEqual((await storage(staff2).list(path.slice(0, path.lastIndexOf('/')))).data, [])
+    assert.deepEqual((await staff2.from('incident_reports').select('*').eq('id', attempt.reportId)).data, [])
+    assert.deepEqual((await staff2.from('decisions').select('*').eq('id', ban)).data, [])
+    assert.deepEqual((await staff2.from('decision_history').select('*').eq('decision_id', ban)).data, [])
+    for (const client of [outsider, inactive, anonymous]) {
+      await denied(client, attempt.reportId, path, client === anonymous)
+      await assert.rejects(() => readHistory(client))
+    }
     await allowed(owner, attempt.reportId, path)
     await allowed(manager, attempt.reportId, path)
 
@@ -197,6 +218,7 @@ async function main() {
     assert.equal(await submitIncident(owner, venueId, retryDraft, retry, noProgress), retry.reportId)
     assert.deepEqual((await owner.from('incident_reports').select('id').eq('id', retry.reportId)).data, [{ id: retry.reportId }])
     const jpegPath = (await prepare(retry)).object_path
+    await denied(staff2, retry.reportId, jpegPath)
     const jpegDownload = await storage(owner).download(jpegPath)
     assert.equal(jpegDownload.error, null)
     assert.equal(await validateIncidentPhoto(jpegDownload.data), 'image/jpeg')
@@ -230,7 +252,7 @@ async function main() {
       assert.equal((await fixtureAdmin.auth.admin.deleteUser(user)).error, null)
     }
   }
-  console.log('PASS: local HTTP/JWT photo ownership, ban visibility and revocation, private Storage, type/size enforcement, idempotent retries, and staged cleanup.')
+  console.log('PASS: local HTTP/JWT photo ownership, active-ban and lift-update visibility, private Storage, type/size enforcement, idempotent retries, and staged cleanup.')
 }
 
 main().catch(error => {

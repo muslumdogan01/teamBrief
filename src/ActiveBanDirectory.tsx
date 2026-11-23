@@ -45,7 +45,7 @@ function BanFacts({ ban, now }: { ban: ActiveBan; now: number }) {
   </>
 }
 function BanPhoto({ client, ban, compact }: { client: SupabaseClient; ban: ActiveBan; compact?: boolean }) {
-  return <IncidentPhoto client={client} photo={ban.photo_path ? { path: ban.photo_path, reportId: ban.report_id } : undefined}
+  return <IncidentPhoto client={client} photo={ban.photo_path ? { path: ban.photo_path } : undefined}
     label={ban.label} compact={compact} />
 }
 
