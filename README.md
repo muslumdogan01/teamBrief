@@ -50,6 +50,7 @@ Use a designated Supabase project for fictional demo data. Confirm the project r
    | `20261118000200` | Private `incident-photos` bucket, photo metadata, upload reservations and Storage policies |
    | `20261118000300` | Restricts the relevant Storage policies to regular upload and authenticated download operations |
    | `20261118000400` | Active ban directory and totals |
+   | `20261123000100` | Authenticated object-info checks for private photo downloads |
 
 4. In Storage, verify that `incident-photos` is private, allows JPEG/PNG/WebP, and has a limit of 5,000,000 bytes. The migrations create the bucket and policies together. Review an existing bucket before applying the photo migration, which inserts that exact bucket ID. Verify signed/public downloads and unrelated users are denied, while the intended authenticated users can download under the app's access rules. [Supabase private buckets](https://supabase.com/docs/guides/storage/buckets/fundamentals)
 

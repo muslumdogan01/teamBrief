@@ -46,12 +46,16 @@ async function main() {
     const download = await storage(client).download(path, {}, { cache: 'no-store' })
     assert.equal(download.error, null)
     assert.deepEqual(Buffer.from(await download.data.arrayBuffer()), Buffer.from(await png.arrayBuffer()))
+    // Hosted Storage checks authenticated object info before serving a private download.
+    const info = await storage(client).info(path)
+    assert.equal(info.error, null, 'the authenticated object-info check must also succeed')
   }
   async function denied(client, id, path, isAnonymous = false) {
     const metadata = await client.from('incident_photos').select('object_path').eq('report_id', id)
     if (isAnonymous) assert.ok(metadata.error)
     else { assert.equal(metadata.error, null); assert.deepEqual(metadata.data, []) }
     assert.ok((await storage(client).download(path, {}, { cache: 'no-store' })).error)
+    assert.ok((await storage(client).info(path)).error, 'the object-info check must also be denied')
   }
 
   try {
@@ -143,6 +147,9 @@ async function main() {
     await denied(outsider, attempt.reportId, path)
     await denied(inactive, attempt.reportId, path)
     assert.ok((await storage(staff2).createSignedUrl(path, 30)).error)
+    const listing = await storage(staff2).list(path.slice(0, path.lastIndexOf('/')))
+    assert.equal(listing.error, null)
+    assert.deepEqual(listing.data, [], 'object info permission must not expose listing')
     for (const client of [staff2, manager, owner]) {
       assert.ok((await storage(client).upload(path, webp, { upsert: true })).error)
       assert.ok((await storage(client).update(path, webp)).error)
