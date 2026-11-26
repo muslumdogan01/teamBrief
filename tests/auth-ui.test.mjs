@@ -5,7 +5,7 @@ import { createElement } from 'react'
 import { createServer } from 'vite'
 
 test('sign-in errors, sign-out, account switching and delayed old data are handled by the UI', async () => {
-  const dom = new JSDOM('<!doctype html><html><body></body></html>', {url:'http://localhost'})
+  const dom = new JSDOM('<!doctype html><html><body></body></html>', {url:'http://localhost', pretendToBeVisual:true})
   dom.window.scrollTo = () => {}
   const previous = new Map()
   for (const [key,value] of Object.entries({window:dom.window,document:dom.window.document,navigator:dom.window.navigator,HTMLElement:dom.window.HTMLElement,IS_REACT_ACT_ENVIRONMENT:true})) {
@@ -158,7 +158,7 @@ test('sign-in errors, sign-out, account switching and delayed old data are handl
     assert.ok(ui.getByRole('heading', { name: 'Recent Updates' }))
     assert.equal(ui.queryByRole('button', { name: 'Mark as read' }), null)
     manyUpdates = true
-    fireEvent.click(within(ui.getByRole('navigation')).getByRole('button', { name: 'Home' }))
+    fireEvent.click(within(ui.getByRole('navigation', { name: 'Main navigation' })).getByRole('button', { name: 'Home' }))
     const recent = within(ui.getByRole('region', { name: 'Recent Updates' }))
     await recent.findByLabelText('Unread in this pub: 20')
     await waitFor(() => assert.equal(recent.getAllByRole('listitem').length, 5))
@@ -200,7 +200,15 @@ test('sign-in errors, sign-out, account switching and delayed old data are handl
     manyUpdates = false
     fireEvent.click(ui.getByRole('button',{name:'My Incidents'}))
     await waitFor(()=>assert.ok(ui.queryByText('PRIVATE_one')))
-    fireEvent.click(ui.getByRole('button',{name:'Sign out'}))
+    assert.equal(ui.queryByRole('button', { name: 'Sign out' }), null)
+    assert.equal(ui.queryByText('Demo environment'), null)
+    fireEvent.click(within(ui.getByRole('navigation', { name: 'Main navigation' })).getByRole('button', { name: 'Account' }))
+    const account = within(ui.getByRole('region', { name: 'Account details' }))
+    for (const value of ['one', 'one@example.test', 'Test Pub', 'Staff', 'Demo environment']) {
+      assert.ok(account.getByText(value))
+    }
+    assert.equal(ui.getByRole('region', { name: 'Account details' }).querySelector('input, select, textarea, [contenteditable]'), null)
+    fireEvent.click(account.getByRole('button', { name: 'Sign out' }))
     await waitFor(()=>assert.ok(ui.queryByText('Sign in to TeamBrief')))
     assert.equal(ui.queryByText('PRIVATE_one'),null)
     // Start an old-user request, then switch identity before it resolves.

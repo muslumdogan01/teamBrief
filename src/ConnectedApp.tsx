@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
-import { createClient } from '@supabase/supabase-js'
 import type { SupabaseClient, User } from '@supabase/supabase-js'
+import type { BrowserConfig } from './supabase-client.ts'
 import { checked, createDecision, emptyData, liftDecision, loadData, loadTeamTotals, memberships } from './backend.ts'
 import type { Data, Incident, Membership, ServerDecision, TeamTotals } from './backend.ts'
 import { discardIncidentPhoto, submitIncident } from './incident-photo-backend.ts'
@@ -16,20 +16,7 @@ import { formatDate, incidentLabels, severityLabels } from './reports.ts'
 import './App.css'
 
 function message(e: unknown) { return e instanceof Error ? e.message : 'Unable to complete this request. Please try again.' }
-const settings: { url: string; key: string; environment: string } | { error: string } =
-  import.meta.env.TEAMBRIEF_SUPABASE
-
-export default function ConnectedApp() {
-  const config = useMemo(() => {
-    if ('error' in settings) return settings
-    try {
-      return { environment: settings.environment, client: createClient(settings.url, settings.key, { auth: {
-        storage: typeof window === 'undefined' ? undefined : window.sessionStorage,
-        storageKey: settings.environment === 'Local test environment' ? 'teambrief.auth.local' : `teambrief.auth.${new URL(settings.url).host}`,
-      } }) }
-    }
-    catch (e) { return { error: message(e) } }
-  }, [])
+export default function ConnectedApp({ config }: { config: BrowserConfig }) {
   if ('error' in config) return <main><h1>TeamBrief</h1><p className="error-banner" role="alert">{config.error}</p></main>
   return <AuthApp client={config.client} environment={config.environment} />
 }
@@ -62,7 +49,7 @@ export function AuthApp({ client, environment }: { client: SupabaseClient; envir
   }
   if (loading) return <main><h1>TeamBrief</h1><p role="status">Loading your session…</p></main>
   if (!user) return <Login client={client} environment={environment} error={error} retryLogout={logout} />
-  return <Account key={user.id} client={client} environment={environment} user={user} logout={logout} />
+  return <SignedInWorkspace key={user.id} client={client} environment={environment} user={user} logout={logout} />
 }
 export function Login({ client, environment, error: external = '', retryLogout }: { client: SupabaseClient; environment: string; error?: string; retryLogout?: () => Promise<void> }) {
   const [email, setEmail] = useState('')
@@ -77,7 +64,7 @@ export function Login({ client, environment, error: external = '', retryLogout }
   }
   return <main className="auth-page"><form className="panel report-form" onSubmit={submit}><h1>Sign in to TeamBrief</h1><p>{environment}</p><p>Sign in with the account provided by your pub administrator.</p><div className="field"><label htmlFor="email">Email</label><input id="email" type="email" autoComplete="username" required value={email} onChange={e => setEmail(e.target.value)} /></div><div className="field"><label htmlFor="password">Password</label><input id="password" type="password" autoComplete="current-password" required value={password} onChange={e => setPassword(e.target.value)} /></div>{(error || external) && <p role="alert" className="error-banner">{error || external}</p>}<button className="primary" disabled={busy}>{busy ? 'Signing in…' : 'Sign in'}</button>{external && retryLogout && <button type="button" onClick={retryLogout}>Retry sign out</button>}</form></main>
 }
-function Account({ client, user, logout, environment }: { client: SupabaseClient; environment: string; user: User; logout: () => Promise<void> }) {
+function SignedInWorkspace({ client, user, logout, environment }: { client: SupabaseClient; environment: string; user: User; logout: () => Promise<void> }) {
   const [members, setMembers] = useState<Membership[] | null>(null)
   const [error, setError] = useState('')
   const [venue, setVenue] = useState('')
@@ -88,15 +75,78 @@ function Account({ client, user, logout, environment }: { client: SupabaseClient
     return () => { alive = false }
   }, [client, user.id, attempt])
   const member = members?.find(m => m.venueId === venue)
-  return <><header className={member ? "topbar account-topbar" : "topbar"}><strong>TeamBrief · {user.email}</strong><button className="secondary-button" onClick={logout}>Sign out</button></header>{error ? <main><p role="alert" className="error-banner">{error}</p><button onClick={() => { setMembers(null); setError(''); setAttempt(n => n + 1) }}>Retry</button></main> : !members ? <main role="status">Loading pub membership…</main> : !member ? <main><h1>Access not granted</h1><p>Your account has no active pub membership. Ask your pub administrator to assign access.</p></main> : <>{members.length > 1 && <label className="pub-picker">Pub <select value={venue} onChange={e => setVenue(e.target.value)}>{members.map(m => <option key={m.venueId} value={m.venueId}>{m.venueName}</option>)}</select></label>}<Workspace key={member.venueId} client={client} member={member} environment={environment} /></>}</>
+  if (member) {
+    return <Workspace key={member.venueId} client={client} member={member} user={user} logout={logout}
+      environment={environment} members={members ?? []} onVenueChange={setVenue} />
+  }
+  return <><header className="topbar"><strong>TeamBrief</strong><button className="secondary-button" onClick={logout}>Sign out</button></header>
+    {error ? <main><p role="alert" className="error-banner">{error}</p><button onClick={() => { setMembers(null); setError(''); setAttempt(n => n + 1) }}>Retry</button></main>
+      : !members ? <main role="status">Loading pub membership…</main>
+      : <main><h1>Access not granted</h1><p>Your account has no active pub membership. Ask your pub administrator to assign access.</p></main>}
+  </>
 }
-type Page = 'home' | 'create' | 'mine' | 'active' | 'updates' | 'review' | 'history'
-function Workspace({ client, member, environment }: { client: SupabaseClient; member: Membership; environment: string }) {
+
+const titles = {
+  home: 'Home', create: 'Report Incident', mine: 'My Incidents', active: 'Active Decisions',
+  updates: 'Updates', review: 'Management', history: 'Decision history', account: 'Account',
+}
+type Page = keyof typeof titles
+const mobileTabs = [
+  { page: 'home', label: 'Home', icon: '⌂' },
+  { page: 'create', label: 'Report', icon: '+' },
+  { page: 'active', label: 'Active bans', icon: '⊘' },
+] as const
+const morePages = ['mine', 'updates', 'account'] as const
+const managerPages = ['review', 'history'] as const
+
+function MobileNavigation({ page, navigate, manager }: { page: Page; navigate: (page: Page) => void; manager: boolean }) {
+  const dialog = useRef<HTMLDialogElement>(null)
+  const opener = useRef<HTMLButtonElement>(null)
+  const [expanded, setExpanded] = useState(false)
+  const links = manager ? [...morePages, ...managerPages] : morePages
+  useEffect(() => {
+    const mobile = window.matchMedia?.('(max-width: 700px)')
+    const closeOnDesktop = (event: MediaQueryListEvent) => {
+      if (!event.matches) dialog.current?.close()
+    }
+    mobile?.addEventListener('change', closeOnDesktop)
+    return () => mobile?.removeEventListener('change', closeOnDesktop)
+  }, [])
+
+  return <>
+    <nav className="mobile-nav" aria-label="Mobile navigation">
+      {mobileTabs.map(tab => <button key={tab.page} type="button" className="mobile-tab"
+        aria-current={page === tab.page ? 'page' : undefined} onClick={() => navigate(tab.page)}>
+        <span aria-hidden="true">{tab.icon}</span>{tab.label}
+      </button>)}
+      <button ref={opener} type="button" className="mobile-tab" aria-haspopup="dialog" aria-expanded={expanded}
+        aria-controls="mobile-more" data-current={links.some(link => link === page)}
+        onClick={() => { opener.current?.focus(); dialog.current?.showModal(); setExpanded(true) }}>
+        <span aria-hidden="true">⋯</span>More
+      </button>
+    </nav>
+    <dialog id="mobile-more" ref={dialog} className="mobile-more" aria-labelledby="mobile-more-title"
+      onClose={() => setExpanded(false)}>
+      <div className="mobile-more-heading">
+        <h2 id="mobile-more-title">More</h2>
+        <form method="dialog"><button className="secondary-button">Close</button></form>
+      </div>
+      <ul>{links.map(link => <li key={link}><button type="button" aria-current={link === page ? 'page' : undefined}
+        onClick={() => { dialog.current?.close(); navigate(link) }}>{titles[link]}</button></li>)}</ul>
+    </dialog>
+  </>
+}
+
+function Workspace({ client, member, user, logout, environment, members, onVenueChange }: {
+  client: SupabaseClient; member: Membership; user: User; logout: () => Promise<void>; environment: string
+  members: Membership[]; onVenueChange: (venueId: string) => void
+}) {
   const [data, setData] = useState<Data>(emptyData)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
   const [page, setPage] = useState<Page>('home')
+  const heading = useRef<HTMLHeadingElement>(null)
   const [selected, setSelected] = useState<string | null>(null)
   const [now, setNow] = useState(() => Date.now())
   const [homeQuery, setHomeQuery] = useState('')
@@ -155,12 +205,12 @@ function Workspace({ client, member, environment }: { client: SupabaseClient; me
   const pending = data.incidents.filter(r => !r.decision)
   const incident = selected ? incidentsById.get(selected) : undefined
   const historyDecision = page === 'history' ? data.decisions.find(d => d.id === selected) : undefined
-  const titles: Record<Page, string> = { home: 'Home', create: 'Report Incident', mine: 'My Incidents', active: 'Active Decisions', updates: 'Updates', review: 'Management', history: 'Decision history' }
   const directoryPage = page === 'home' || page === 'active'
   const banProps = { client, venueId: member.venueId, now, refreshVersion }
   function navigate(p: Page) {
     setPage(p); setSelected(null); setNotice('')
-    if (p === 'updates') window.scrollTo(0, 0)
+    window.scrollTo(0, 0)
+    window.requestAnimationFrame(() => heading.current?.focus({ preventScroll: true }))
   }
   function viewAll(query: string) { setActiveQuery(query); navigate('active') }
   function openBan(id: string) { if (page === 'home') viewAll(homeQuery.trim()); setSelected(id) }
@@ -179,14 +229,41 @@ function Workspace({ client, member, environment }: { client: SupabaseClient; me
       </button>
     </li>)}</ul> : <p className="empty">No incidents to show.</p>
   }
-  return <div className="app-shell connected-shell"><aside className="sidebar"><a className="brand" href="#" onClick={e => { e.preventDefault(); navigate('home') }}>TeamBrief</a><p>{member.venueName}</p><nav aria-label="Main navigation">{(Object.keys(titles) as Page[]).filter(p => manager || !['review', 'history'].includes(p)).map(p => <button key={p} className={page === p ? 'nav-item active' : 'nav-item'} onClick={() => navigate(p)}>{titles[p]}</button>)}</nav><div className="profile">{member.name} · {manager ? 'Manager' : 'Staff'}</div></aside><div className="workspace"><main className="connected-workspace">
+  const navPages = (Object.keys(titles) as Page[]).filter(p => manager || (p !== 'review' && p !== 'history'))
+  return <div className="app-shell connected-shell">
+    <aside className="sidebar">
+      <a className="brand" href="#" onClick={e => { e.preventDefault(); navigate('home') }}>TeamBrief</a>
+      <p>{member.venueName}</p>
+      <nav aria-label="Main navigation">{navPages.map(p => <button key={p} className={page === p ? 'nav-item active' : 'nav-item'}
+        aria-current={page === p ? 'page' : undefined} onClick={() => navigate(p)}>{titles[p]}</button>)}</nav>
+      <div className="profile">{member.name} · {manager ? 'Manager' : 'Staff'}</div>
+    </aside>
+    <header className="mobile-heading">
+      <div><strong>TeamBrief</strong><span>{member.venueName}</span></div>
+      <button type="button" className="secondary-button" aria-current={page === 'account' ? 'page' : undefined}
+        onClick={() => navigate('account')}>Account</button>
+    </header>
+    <div className="workspace">
+      {members.length > 1 && <label className="pub-picker">Switch pub <select value={member.venueId}
+        onChange={e => onVenueChange(e.target.value)}>{members.map(m => <option key={m.venueId} value={m.venueId}>{m.venueName}</option>)}</select></label>}
+      <main className="connected-workspace">
     <header className="connected-heading">
-      <div><h1 id={page === 'active' ? 'active-decisions' : undefined}>{titles[page]}</h1><p className="connected-context">{member.venueName}<span>{environment}</span></p></div>
-      <div className="connected-actions">
+      <h1 ref={heading} tabIndex={-1} id={page === 'active' ? 'active-decisions' : undefined}>{titles[page]}</h1>
+      {page !== 'account' && <div className="connected-actions">
         <button className="secondary-button" onClick={() => { void refresh().catch(() => {}) }}>Refresh</button>
         {page === 'home' && <button className="primary" onClick={() => navigate('create')}>Report incident</button>}
-      </div>
+      </div>}
     </header>
+    {page === 'account' && <section className="panel detail account-details" aria-label="Account details">
+      <dl>
+        <div><dt>Name</dt><dd>{member.name}</dd></div>
+        <div><dt>Email</dt><dd>{user.email ?? 'Unavailable'}</dd></div>
+        <div><dt>Selected pub</dt><dd>{member.venueName}</dd></div>
+        <div><dt>Role</dt><dd>{manager ? 'Manager' : 'Staff'}</dd></div>
+      </dl>
+      <p className="account-environment">{environment}</p>
+      <button className="secondary-button" onClick={logout}>Sign out</button>
+    </section>}
     {notice && <p className="success-banner" role="status">{notice}</p>}
     {page === 'home' && <div className="summary-strip" role="group" aria-label="Pub totals">
       <button onClick={() => viewAll('')}>Active Decisions <strong>{totals?.active_bans ?? '—'}</strong></button>
@@ -203,7 +280,7 @@ function Workspace({ client, member, environment }: { client: SupabaseClient; me
       venueId={member.venueId} refreshVersion={refreshVersion} recent={directoryPage}
       onAll={() => navigate('updates')} onActive={() => { viewAll(''); window.scrollTo(0, 0) }} />}
     {error && <p className="error-banner" role="alert">{error}</p>}
-    {loading ? (!directoryPage && page !== 'updates' && <p role="status">Loading team records…</p>) : (error && page !== 'create') || !allowed
+    {page !== 'account' && (loading ? (!directoryPage && page !== 'updates' && <p role="status">Loading team records…</p>) : (error && page !== 'create') || !allowed
       ? (!directoryPage && page !== 'updates' && <p>Records are unavailable. Refresh to try again.</p>) : <>
     {page === 'create' && <ConnectedReportForm client={client} member={member} save={write => mutate(write, 'mine', true)} />}
     {(page === 'mine' || page === 'review') && (incident ? <><button onClick={() => setSelected(null)}>← Back</button><FullIncident incident={incident}>{incidentPhoto(incident)}</FullIncident>{incident.decision ? decisionView(incident.decision) : page === 'review' && manager ? <DecisionForm actor={member.name} key={incident.id} onSave={draft => mutate(() => createDecision(client, member.venueId, incident.id, draft), 'review')} /> : <p>Awaiting review.</p>}</> : list(page === 'mine' ? mine : pending, page === 'mine'))}
@@ -228,7 +305,11 @@ function Workspace({ client, member, environment }: { client: SupabaseClient; me
         </button>
       </li>
     })}</ul> : <p className="empty">No decisions yet.</p>)}
-  </>}</main></div></div>
+  </>)}
+      </main>
+    </div>
+    <MobileNavigation page={page} navigate={navigate} manager={manager} />
+  </div>
 }
 function DecisionStatus({ decision }: { decision: ServerDecision | null }) {
   const status = decisionStatus(decision)
